@@ -1211,13 +1211,13 @@ def render_material_images_for_vision(name: str, content_type: str | None, data:
     return [], ["PDF 또는 PPTX만 시각 분석 대상으로 지원합니다."]
 
 
-async def analyze_materials_with_gemini_vision(
+async def analyze_preflight_with_gemini(
     script: str,
     local_materials: list[dict[str, Any]],
     uploads: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key or not uploads:
+    if not api_key:
         return None
 
     vision_parts: list[dict[str, Any]] = []
@@ -1258,37 +1258,43 @@ async def analyze_materials_with_gemini_vision(
         if image_budget <= 0:
             break
 
-    if not vision_parts:
-        return None
-
     prompt = {
         "instruction": (
-            "You are a Korean presentation design reviewer. Analyze the uploaded presentation materials together "
-            "with the speech script. Return strict JSON only. Base visual judgments on the rendered slide/page images, "
-            "and use extracted text only as supporting evidence."
+            "You are a Korean presentation coach. Analyze the speech script first, then analyze the uploaded "
+            "presentation materials together with that script. Return strict JSON only. Base visual judgments on the "
+            "rendered slide/page images when they exist, and use extracted text only as supporting evidence."
         ),
         "script": script,
         "materials": material_context,
         "required_schema": {
-            "summary": "Korean short paragraph",
-            "estimated_minutes": "number",
-            "clarity_score": "integer 0-100",
-            "consistency_score": "integer 0-100",
-            "topic_fit_score": "integer 0-100",
-            "overall_score": "integer 0-100",
-            "notes": ["Korean short sentence"],
-            "files": [
-                {
-                    "filename": "string",
-                    "estimated_minutes": "number",
-                    "clarity_score": "integer 0-100",
-                    "consistency_score": "integer 0-100",
-                    "topic_fit_score": "integer 0-100",
-                    "overall_score": "integer 0-100",
-                    "summary": "Korean short sentence",
-                    "notes": ["Korean short sentence"],
-                }
-            ],
+            "script_feedback": {
+                "score": "integer 0-100",
+                "word_count": "number",
+                "average_sentence_words": "number",
+                "summary": "Korean short paragraph",
+                "suggestions": ["Korean short sentence"],
+            },
+            "presentation_material": {
+                "summary": "Korean short paragraph",
+                "estimated_minutes": "number",
+                "clarity_score": "integer 0-100",
+                "consistency_score": "integer 0-100",
+                "topic_fit_score": "integer 0-100",
+                "overall_score": "integer 0-100",
+                "notes": ["Korean short sentence"],
+                "files": [
+                    {
+                        "filename": "string",
+                        "estimated_minutes": "number",
+                        "clarity_score": "integer 0-100",
+                        "consistency_score": "integer 0-100",
+                        "topic_fit_score": "integer 0-100",
+                        "overall_score": "integer 0-100",
+                        "summary": "Korean short sentence",
+                        "notes": ["Korean short sentence"],
+                    }
+                ],
+            },
         },
     }
     payload = {
@@ -1311,6 +1317,30 @@ async def analyze_materials_with_gemini_vision(
         return json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
     except Exception:
         return None
+
+
+def merge_gemini_script_feedback(
+    local_feedback: dict[str, Any],
+    gemini_feedback: dict[str, Any] | None,
+) -> dict[str, Any]:
+    merged = dict(local_feedback)
+    if not gemini_feedback:
+        return merged
+
+    merged.update(
+        {
+            "score": clamp(gemini_feedback.get("score", merged.get("score", 0)), 0, 100),
+            "word_count": int(gemini_feedback.get("word_count", merged.get("word_count", 0)) or 0),
+            "average_sentence_words": round(
+                float(gemini_feedback.get("average_sentence_words", merged.get("average_sentence_words", 0)) or 0),
+                1,
+            ),
+            "summary": gemini_feedback.get("summary", merged.get("summary", "")),
+            "suggestions": list(gemini_feedback.get("suggestions") or merged.get("suggestions") or [])[:4],
+            "analysis_source": "gemini_preflight",
+        }
+    )
+    return merged
 
 
 def merge_vision_material_feedback(
@@ -1340,6 +1370,33 @@ def merge_vision_material_feedback(
             )
         merged_materials.append(merged)
     return merged_materials
+
+
+def merge_material_feedback_summary(
+    local_feedback: dict[str, Any],
+    gemini_feedback: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not gemini_feedback or not local_feedback.get("uploaded"):
+        return local_feedback
+
+    merged = dict(local_feedback)
+    merged.update(
+        {
+            "estimated_minutes": float(gemini_feedback.get("estimated_minutes", merged.get("estimated_minutes", 0)) or 0),
+            "clarity_score": round(clamp(gemini_feedback.get("clarity_score", merged.get("clarity_score", 0)), 0, 100)),
+            "consistency_score": round(
+                clamp(gemini_feedback.get("consistency_score", merged.get("consistency_score", 0)), 0, 100)
+            ),
+            "topic_fit_score": round(
+                clamp(gemini_feedback.get("topic_fit_score", merged.get("topic_fit_score", 0)), 0, 100)
+            ),
+            "overall_score": round(clamp(gemini_feedback.get("overall_score", merged.get("overall_score", 0)), 0, 100)),
+            "summary": gemini_feedback.get("summary", merged.get("summary", "")),
+            "notes": list(gemini_feedback.get("notes") or merged.get("notes") or [])[:8],
+            "analysis_source": "gemini_preflight",
+        }
+    )
+    return merged
 
 
 def normalize_whitespace(text: str) -> str:
@@ -2125,9 +2182,11 @@ async def start_session(
             }
         )
         uploaded_materials.append(analyze_material_file(script, file.filename or "material", file.content_type, data))
+    local_script_feedback = script_quality(script.strip())
+    preflight_feedback = await analyze_preflight_with_gemini(script.strip(), uploaded_materials, uploaded_blobs)
     uploaded_materials = merge_vision_material_feedback(
         uploaded_materials,
-        await analyze_materials_with_gemini_vision(script, uploaded_materials, uploaded_blobs),
+        (preflight_feedback or {}).get("presentation_material"),
     )
     reference_video = await build_reference_video(reference_video_url)
 
@@ -2139,10 +2198,16 @@ async def start_session(
         reference_video=reference_video,
     )
     sessions[session_id] = session
-    material_feedback = build_material_feedback(session.script, session.materials)
+    material_feedback = merge_material_feedback_summary(
+        build_material_feedback(session.script, session.materials),
+        (preflight_feedback or {}).get("presentation_material"),
+    )
     return {
         "session_id": session_id,
-        "script_feedback": script_quality(session.script),
+        "script_feedback": merge_gemini_script_feedback(
+            local_script_feedback,
+            (preflight_feedback or {}).get("script_feedback"),
+        ),
         "criteria_basis": presentation_criteria(),
         "presentation_material": material_feedback,
         "reference_video": reference_video,

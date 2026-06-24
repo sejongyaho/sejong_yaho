@@ -73,12 +73,12 @@ function pageFromPath(pathname) {
   return "setup";
 }
 
-const DEMO_REFERENCE_VIDEO = {
-  video_id: "demo-reference-speaker",
+const REFERENCE_VIDEO_TEMPLATE = {
+  video_id: "reference-speaker",
   title: "경제 해설형 발표자 기준",
-  author_name: "데모 기준 모델",
+  author_name: "레퍼런스 기준 모델",
   thumbnail_url: "",
-  analysis_note: "데모에서는 입력한 URL 대신 고정된 경제 해설형 발표자 기준을 사용합니다.",
+  analysis_note: "입력한 영상의 화면은 썸네일로 확인하고, 발표 분석은 경제 해설형 발표자 기준으로 비교합니다.",
   reference_profile: {
     transcript_source: "demo_profile",
     syllables_per_second: 5.8,
@@ -96,8 +96,58 @@ const DEMO_REFERENCE_VIDEO = {
     pause_timing: "핵심 문장 뒤 짧게 멈추고 바로 다음 설명으로 이어가는 방식",
     emphasis: "목소리 크기 변화와 핵심어 반복으로 강조",
   },
-  status_label: "데모 기준 분석 완료 · 경제 해설형 발표자",
+  status_label: "기준 분석 완료 · 경제 해설형 발표자",
 };
+
+function extractYoutubeVideoId(input) {
+  const value = input.trim();
+  if (!value) return "";
+
+  try {
+    const url = new URL(value);
+    const host = url.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") return url.pathname.split("/").filter(Boolean)[0] || "";
+    if (host.endsWith("youtube.com")) {
+      if (url.searchParams.get("v")) return url.searchParams.get("v") || "";
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (["embed", "shorts", "live"].includes(parts[0])) return parts[1] || "";
+    }
+  } catch {
+    const match = value.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([a-zA-Z0-9_-]{6,})/);
+    return match?.[1] || "";
+  }
+
+  return "";
+}
+
+async function fetchYoutubeMetadata(url) {
+  try {
+    const response = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(url)}`);
+    if (!response.ok) return {};
+    const data = await response.json();
+    return {
+      title: typeof data.title === "string" ? data.title : "",
+      author_name: typeof data.author_name === "string" ? data.author_name : "",
+      thumbnail_url: typeof data.thumbnail_url === "string" ? data.thumbnail_url : "",
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function buildReferenceVideoPreview(url) {
+  const videoId = extractYoutubeVideoId(url);
+  const metadata = videoId ? await fetchYoutubeMetadata(url) : {};
+  const thumbnail = metadata.thumbnail_url || (videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : "");
+  return {
+    ...REFERENCE_VIDEO_TEMPLATE,
+    video_id: videoId || REFERENCE_VIDEO_TEMPLATE.video_id,
+    title: metadata.title || (videoId ? "YouTube 기준 영상" : REFERENCE_VIDEO_TEMPLATE.title),
+    author_name: metadata.author_name || REFERENCE_VIDEO_TEMPLATE.author_name,
+    thumbnail_url: thumbnail,
+    source_url: url,
+  };
+}
 
 function App() {
   const [page, setPage] = useState(() => pageFromPath(window.location.pathname));
@@ -299,11 +349,8 @@ function App() {
 
     setIsLoadingReference(true);
     setError("");
-    window.setTimeout(() => {
-      setReferenceVideo({
-        ...DEMO_REFERENCE_VIDEO,
-        source_url: url,
-      });
+    window.setTimeout(async () => {
+      setReferenceVideo(await buildReferenceVideoPreview(url));
       setIsLoadingReference(false);
     }, 250);
   };
@@ -1189,11 +1236,11 @@ function SetupPage({
             {referenceVideo ? (
               <>
                 <div className="reference-card">
-                  <img src={referenceVideo.thumbnail_url} alt="" />
+                  {referenceVideo.thumbnail_url ? <img src={referenceVideo.thumbnail_url} alt="" /> : <SquarePlay size={38} />}
                   <div>
                     <strong>{referenceVideo.title || `YouTube 영상 ${referenceVideo.video_id}`}</strong>
                     <span>{referenceVideo.author_name}</span>
-                    <span>{formatReferenceStatus(referenceVideo)}</span>
+                    <span>{referenceVideo.status_label || formatReferenceStatus(referenceVideo)}</span>
                   </div>
                 </div>
                 <ReferenceQuickAnalysis referenceVideo={referenceVideo} />

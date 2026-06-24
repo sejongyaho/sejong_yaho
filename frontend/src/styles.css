@@ -2701,6 +2701,10 @@ textarea::placeholder {
   gap: 10px;
 }
 
+.reference-analysis-grid.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .reference-analysis-item {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -2719,6 +2723,12 @@ textarea::placeholder {
   margin: 8px 0 0;
   color: var(--text-soft);
   line-height: 1.55;
+}
+
+.reference-analysis-grid.compact .reference-analysis-item p {
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1.35;
 }
 
 @media (max-width: 980px) {

@@ -110,6 +110,125 @@ def build_overlap_ratio(script_tokens: set[str], transcript: str) -> float:
         return 0.0
     return len(script_tokens & transcript_tokens) / len(script_tokens)
 
+
+FEEDBACK_TOPIC_KEYWORDS = {
+    "rhythm": ("리듬", "구간별", "변동", "일정"),
+    "pace": ("속도", "말속도", "빠른", "빨라", "느린", "느려", "음절", "wpm"),
+    "pause": ("침묵", "휴지", "멈춤", "쉬는", "쉼", "공백", "복구"),
+    "script": ("대본", "핵심어", "키워드", "메시지", "반영"),
+    "material": ("자료", "슬라이드", "시인성", "발표자료"),
+    "ending": ("마무리", "결론", "감사"),
+}
+
+USER_TEXT_REPLACEMENTS = {
+    "논문에서 전달력 높은 말하기로 제시된 보통 발화 속도(초당 약 6음절)에 가깝습니다.": "말 속도가 안정적이라 핵심 내용이 따라가기 좋습니다.",
+    "전체 발화 중 휴지 비율이 논문에서 제시한 전달력 높은 말하기의 범위에 가깝습니다.": "쉬는 타이밍이 과하지 않아 발표 흐름이 안정적입니다.",
+    "휴지 비율이 25% 이상이면 전달력이 떨어질 수 있습니다.": "쉬는 시간이 길어 흐름이 끊겨 보일 수 있습니다.",
+    "논문에서 제시한 전달력 높은 말하기의 ": "",
+    "논문에서 전달력 높은 말하기로 제시된 ": "",
+}
+
+UNHELPFUL_SUMMARY_MARKERS = (
+    "신지영",
+    "운율 중심",
+    "연구를 반영",
+    "criteria_basis",
+    "rubric",
+    "내부 기준",
+)
+
+
+def clean_user_text(text: Any) -> str:
+    cleaned = str(text or "").strip()
+    for source, replacement in USER_TEXT_REPLACEMENTS.items():
+        cleaned = cleaned.replace(source, replacement)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def feedback_topic_key(text: str) -> str:
+    normalized = clean_user_text(text).lower()
+    for topic, keywords in FEEDBACK_TOPIC_KEYWORDS.items():
+        if any(keyword.lower() in normalized for keyword in keywords):
+            return topic
+    return normalized[:32]
+
+
+def unique_feedback_items(items: list[Any], max_items: int | None = None) -> list[str]:
+    result: list[str] = []
+    seen_topics: set[str] = set()
+    seen_texts: set[str] = set()
+    for item in items:
+        text = clean_user_text(item)
+        if not text:
+            continue
+        exact_key = re.sub(r"\s+", "", text)
+        topic_key = feedback_topic_key(text)
+        if exact_key in seen_texts or topic_key in seen_topics:
+            continue
+        seen_texts.add(exact_key)
+        seen_topics.add(topic_key)
+        result.append(text)
+        if max_items and len(result) >= max_items:
+            break
+    return result
+
+
+def clean_issue_item(item: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(item)
+    for key in ("title", "evidence", "spoken_excerpt", "suggestion"):
+        if key in cleaned:
+            cleaned[key] = clean_user_text(cleaned.get(key))
+    return cleaned
+
+
+def unique_issue_log(issues: list[dict[str, Any]], max_items: int = 6) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen_types: set[str] = set()
+    for item in issues:
+        issue_type = str(item.get("type") or item.get("title") or "")
+        if issue_type in seen_types:
+            continue
+        seen_types.add(issue_type)
+        result.append(clean_issue_item(item))
+        if len(result) >= max_items:
+            break
+    return result
+
+
+def default_user_summary(report: dict[str, Any]) -> str:
+    score = report.get("overall_score") or 0
+    if score >= 80:
+        return "전체 흐름은 안정적입니다. 다음 연습에서는 강조와 마무리만 조금 더 선명하게 다듬어 보세요."
+    if score >= 60:
+        return "발표의 큰 흐름은 잡혀 있습니다. 속도, 쉬는 타이밍, 핵심어 전달을 조금 더 정리하면 훨씬 또렷해집니다."
+    return "이번 연습에서는 흐름을 먼저 안정시키는 것이 좋습니다. 긴 침묵과 핵심어 전달을 우선 다듬어 보세요."
+
+
+def user_facing_summary(report: dict[str, Any]) -> str:
+    summary = clean_user_text(report.get("summary"))
+    if not summary or any(marker in summary for marker in UNHELPFUL_SUMMARY_MARKERS):
+        return default_user_summary(report)
+    return summary
+
+
+def sanitize_report_for_user(report: dict[str, Any]) -> dict[str, Any]:
+    report["summary"] = user_facing_summary(report)
+    report["strengths"] = unique_feedback_items(report.get("strengths") or [], 4) or ["리허설 데이터를 안정적으로 수집했습니다."]
+    report["improvements"] = unique_feedback_items(report.get("improvements") or [], 6)
+    report["issue_log"] = unique_issue_log(report.get("issue_log") or [], 6)
+
+    detailed_feedback = dict(report.get("detailed_feedback") or {})
+    detailed_feedback["priority_feedback"] = unique_feedback_items(
+        detailed_feedback.get("priority_feedback") or report.get("improvements") or [],
+        5,
+    )
+    detailed_feedback["practice_plan"] = unique_feedback_items(detailed_feedback.get("practice_plan") or [], 5)
+    if "coach_note" in detailed_feedback:
+        detailed_feedback["coach_note"] = clean_user_text(detailed_feedback.get("coach_note"))
+    report["detailed_feedback"] = detailed_feedback
+    return report
+
+
 def build_issue_log(session: SessionState, transcript: str) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     previous_transcript = ""
@@ -231,7 +350,7 @@ def build_issue_log(session: SessionState, transcript: str) -> list[dict[str, An
 
     severity_order = {"high": 0, "medium": 1, "low": 2}
     issues.sort(key=lambda item: (severity_order.get(item["severity"], 3), item["elapsed_seconds"]))
-    return issues[:10]
+    return unique_issue_log(issues, 6)
 
 
 def classify_timeline_window(
@@ -399,7 +518,7 @@ def build_detailed_feedback(report: dict[str, Any], issue_log: list[dict[str, An
         practice_plan.insert(1, f"가장 먼저 고칠 구간은 {issue_log[0]['time']}의 '{issue_log[0]['title']}'입니다.")
 
     return {
-        "priority_feedback": priorities[:5],
+        "priority_feedback": unique_feedback_items(priorities, 5),
         "practice_plan": practice_plan,
         "coach_note": "아래 로그는 발표 중 저장된 누적 음성 인식 결과와 속도/침묵 샘플을 바탕으로 만든 근거입니다.",
     }
@@ -507,7 +626,9 @@ def build_ai_prompt_payload(session: SessionState, fallback_report: dict[str, An
     return {
         "instruction": (
             "You are a Korean presentation coach. Return strict JSON only. "
-            "Use the heuristic report as the source of truth, refine wording, and preserve criteria_basis."
+            "Use the heuristic report as the source of truth and refine wording. "
+            "Do not mention research sources, papers, rubrics, criteria_basis, or internal criteria in user-facing text. "
+            "Avoid repeating the same evaluation topic; keep the clearest evidence when two comments cover the same issue."
         ),
         "script_excerpt": compact_text(session.script, 3500),
         "reference_video": session.reference_video,
@@ -1131,14 +1252,14 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
     strengths = []
     improvements = []
     if 5.6 <= speech_rate <= 6.3:
-        strengths.append("논문에서 전달력 높은 말하기로 제시된 보통 발화 속도(초당 약 6음절)에 가깝습니다.")
+        strengths.append("말 속도가 안정적이라 핵심 내용이 따라가기 좋습니다.")
     elif speech_rate < 5.0:
         improvements.append("인식된 발화 속도가 느린 편입니다. 긴 침묵을 줄이고 다음 의미 단위로 자연스럽게 이어가 보세요.")
     else:
         improvements.append("발화 속도가 빠른 편입니다. 핵심어 앞뒤에서 짧게 쉬어 청중이 정보를 처리할 시간을 주세요.")
 
     if 0.10 <= pause_ratio <= 0.20:
-        strengths.append("전체 발화 중 휴지 비율이 논문에서 제시한 전달력 높은 말하기의 범위에 가깝습니다.")
+        strengths.append("쉬는 타이밍이 과하지 않아 발표 흐름이 안정적입니다.")
     elif pause_ratio >= 0.25:
         improvements.append("휴지 비율이 25% 이상이면 전달력이 떨어질 수 있습니다. 멈춤을 줄이고 의미 단위별로 끊어 말해보세요.")
     else:
@@ -1194,18 +1315,15 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         "presentation_material": material_feedback,
         "reference_video": session.reference_video,
         "audience_reactions": reaction_counts,
-        "strengths": strengths[:4] or ["리허설 데이터를 안정적으로 수집했습니다."],
-        "improvements": improvements[:6],
+        "strengths": unique_feedback_items(strengths, 4) or ["리허설 데이터를 안정적으로 수집했습니다."],
+        "improvements": unique_feedback_items(improvements, 6),
         "issue_log": issue_log,
         "timeline_log": timeline_log,
-        "summary": (
-            "신지영(2013)의 운율 중심 전달력 연구를 반영해 속도, 휴지 비율, 조음-말속도 차이, "
-            "리듬 안정성과 대본 핵심어 반영도를 함께 분석했습니다."
-        ),
+        "summary": "이번 연습에서 바로 고칠 부분을 중심으로 리포트를 정리했습니다.",
         "used_gemini": False,
     }
     if material_feedback.get("uploaded"):
-        report["summary"] = f"{report['summary']} 업로드된 발표자료를 함께 분석해 예상 시간과 시인성도 반영했습니다."
+        report["summary"] = f"{report['summary']} 발표 자료의 시간과 시인성도 함께 확인했습니다."
     if session.reference_video:
         report["reference_comparison"] = build_reference_comparison(report, session.reference_video)
     report["detailed_feedback"] = build_detailed_feedback(report, issue_log)
@@ -1214,32 +1332,33 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         report["reference_video"] = session.reference_video
         report["reference_comparison"] = build_reference_comparison(report, session.reference_video)
 
-    return report
+    return sanitize_report_for_user(report)
 
 
 async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str, Any]) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
-        return fallback_report
+        return sanitize_report_for_user(fallback_report)
 
     allowed, retry_after, remaining = gemini_limiter.allow()
     if not allowed:
-        fallback_report["summary"] = (
-            "Gemini 호출 한도에 도달해 기본 분석으로 대체했습니다. "
-            f"잠시 후 다시 시도하면 AI 분석을 사용할 수 있습니다. (다음 시도 가능: 약 {retry_after:.0f}초 후)"
-        )
+        fallback_report["summary"] = "AI 분석이 잠시 막혀 기본 리포트로 정리했습니다. 지금 바로 고칠 부분부터 확인해 주세요."
         fallback_report["used_gemini"] = False
         fallback_report["gemini_limits"] = {
             "rate_limited": True,
             "retry_after_seconds": round(retry_after, 1),
             "remaining_calls": remaining,
         }
-        return fallback_report
+        return sanitize_report_for_user(fallback_report)
 
     model = get_gemini_model()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     prompt = {
-        "instruction": "You are a Korean presentation coach. Return strict JSON only and preserve the provided criteria_basis.",
+        "instruction": (
+            "You are a Korean presentation coach. Return strict JSON only. "
+            "Do not mention research sources, papers, rubrics, criteria_basis, or internal criteria in user-facing text. "
+            "Avoid repeating the same evaluation topic; keep the clearest evidence when two comments cover the same issue."
+        ),
         "script": session.script,
         "reference_video": session.reference_video,
         "samples": [sample.model_dump() for sample in session.samples[-80:]],
@@ -1280,16 +1399,16 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             report = json.loads(text)
             report["used_gemini"] = True
-            return report
+            return sanitize_report_for_user(report)
     except Exception:
-        fallback_report["summary"] = "AI 리포트를 생성하지 못해 기본 분석 리포트로 정리했습니다. 발표 흐름과 전달력 판단에는 저장된 연습 데이터가 사용되었습니다."
-        return fallback_report
+        fallback_report["summary"] = "기본 분석으로 리포트를 정리했습니다. 지금 연습에서 바로 고칠 부분을 중심으로 확인해 주세요."
+        return sanitize_report_for_user(fallback_report)
 
 
 async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[str, Any]) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
-        return fallback_report
+        return sanitize_report_for_user(fallback_report)
 
     prompt = build_ai_prompt_payload(session, fallback_report)
     payload = {
@@ -1312,23 +1431,20 @@ async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[
             "rate_limited": False,
             "remaining_calls": remaining,
         }
-        return report
+        return sanitize_report_for_user(report)
     except GeminiRateLimitError as exc:
-        fallback_report["summary"] = (
-            "Gemini 호출 한도에 도달해 기본 분석으로 대체했습니다. "
-            f"잠시 후 다시 시도하면 AI 분석을 사용할 수 있습니다. (다음 시도 가능: 약 {exc.retry_after:.0f}초 후)"
-        )
+        fallback_report["summary"] = "AI 분석이 잠시 막혀 기본 리포트로 정리했습니다. 지금 바로 고칠 부분부터 확인해 주세요."
         fallback_report["used_gemini"] = False
         fallback_report["gemini_limits"] = {
             "rate_limited": True,
             "retry_after_seconds": round(exc.retry_after, 1),
             "remaining_calls": exc.remaining,
         }
-        return fallback_report
+        return sanitize_report_for_user(fallback_report)
     except Exception:
-        fallback_report["summary"] = "AI 리포트를 생성하지 못해 기본 분석 리포트로 정리했습니다. 발표 흐름과 전달력 평가는 로컬 분석 결과를 사용했습니다."
+        fallback_report["summary"] = "기본 분석으로 리포트를 정리했습니다. 지금 연습에서 바로 고칠 부분을 중심으로 확인해 주세요."
         fallback_report["used_gemini"] = False
-        return fallback_report
+        return sanitize_report_for_user(fallback_report)
 
 
 @app.get("/api/ai/status")

@@ -288,12 +288,6 @@ export default function PracticePage({
       </header>
 
       {error && <div className="notice">{error}</div>}
-      {isFinishing ? (
-        <div className="notice loading-banner">
-          <Loader2 className="spin" size={16} />
-          <span>발표 정리 중입니다. 녹음본과 대본, 발표 자료를 분석하고 있어요. 잠시만 기다려 주세요.</span>
-        </div>
-      ) : null}
 
       <div className="practice-layout">
         <section className="stage-card">

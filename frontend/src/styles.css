@@ -1368,10 +1368,27 @@ textarea::placeholder {
     #fffdf5;
 }
 
-.loading-banner {
+.report-loading-card {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.report-loading-card strong,
+.report-loading-card p {
+  margin: 0;
+}
+
+.report-loading-card p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
 }
 
 .report-header {

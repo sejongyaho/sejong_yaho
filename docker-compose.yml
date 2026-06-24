@@ -14,8 +14,6 @@ services:
       context: ./backend
     env_file:
       - .env
-    ports:
-      - "8010:8000"
     volumes:
       - ./backend/app:/app/app
 
@@ -23,7 +21,8 @@ services:
     build:
       context: ./frontend
     environment:
-      - VITE_API_BASE_URL=http://localhost:8010
+      - VITE_API_BASE_URL=
+      - VITE_PROXY_TARGET=http://backend:8000
     ports:
       - "5173:5173"
     volumes:

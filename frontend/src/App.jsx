@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   FileText,
@@ -9,14 +9,18 @@ import {
   Square,
   Upload,
 } from "lucide-react";
+import doyunAvatar from "./assets/characters/doyun.svg";
+import harinAvatar from "./assets/characters/harin.svg";
+import minjunAvatar from "./assets/characters/minjun.svg";
+import seoyeonAvatar from "./assets/characters/seoyeon.svg";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8010";
 
 const audience = [
-  { name: "민서", color: "coral", accessory: "clip" },
-  { name: "준", color: "mint", accessory: "glasses" },
-  { name: "하린", color: "yellow", accessory: "bow" },
-  { name: "도윤", color: "blue", accessory: "headset" },
+  { name: "민준", color: "coral", style: "wave", avatar: minjunAvatar },
+  { name: "하린", color: "mint", style: "calm", avatar: harinAvatar },
+  { name: "서연", color: "yellow", style: "bright", avatar: seoyeonAvatar },
+  { name: "도윤", color: "blue", style: "focus", avatar: doyunAvatar },
 ];
 
 const reactionCopy = {
@@ -30,7 +34,7 @@ const reactionCopy = {
 
 const situationMessages = {
   opening: {
-    name: "민서",
+    name: "민준",
     reaction: "attentive",
     text: "좋아요. 차분하게 시작해볼게요.",
     coaching: "첫 문장은 천천히, 핵심 주제를 분명하게 말해보세요.",
@@ -42,7 +46,7 @@ const situationMessages = {
     coaching: "좋은 속도예요. 지금 리듬을 유지하세요.",
   },
   tooFast: {
-    name: "준",
+    name: "민준",
     reaction: "tooFast",
     text: "조금 빨라요. 핵심어가 지나가고 있어요.",
     coaching: "문장 끝에서 짧게 쉬고 다음 문장으로 넘어가세요.",
@@ -54,13 +58,13 @@ const situationMessages = {
     coaching: "침묵이 생겼어요. 준비한 연결 문장을 사용해보세요.",
   },
   longSilence: {
-    name: "민서",
+    name: "민준",
     reaction: "sleepy",
     text: "침묵이 길어지고 있어요.",
     coaching: "긴 침묵은 집중도를 낮춰요. 다음 핵심 문장으로 바로 이어가세요.",
   },
   unclear: {
-    name: "준",
+    name: "민준",
     reaction: "confused",
     text: "목소리는 들리는데 문장이 잘 안 잡혀요.",
     coaching: "조금 더 또박또박 말하면 인식과 전달력이 좋아져요.",
@@ -71,6 +75,48 @@ const situationMessages = {
     text: "주제가 살짝 흐려졌어요.",
     coaching: "대본의 핵심 키워드로 다시 돌아와 보세요.",
   },
+};
+
+const reactionPool = {
+  opening: [
+    { name: "민준", reaction: "attentive", text: "좋아요. 시작 리듬 괜찮아요." },
+    { name: "하린", reaction: "attentive", text: "첫 문장, 더 또렷하게 가도 좋아요." },
+  ],
+  goodPace: [
+    { name: "하린", reaction: "excited", text: "지금 템포 좋아요. 계속 가요." },
+    { name: "도윤", reaction: "excited", text: "듣기 편해졌어요." },
+    { name: "민준", reaction: "attentive", text: "핵심이 잘 들어와요." },
+  ],
+  tooFast: [
+    { name: "민준", reaction: "tooFast", text: "조금 빨라요. 키워드가 스쳐가요." },
+    { name: "하린", reaction: "confused", text: "방금 문장은 한 번 쉬어가면 좋아요." },
+    { name: "도윤", reaction: "tooFast", text: "속도만 낮추면 훨씬 선명해져요." },
+  ],
+  tooSlow: [
+    { name: "도윤", reaction: "tooSlow", text: "잠깐 흐름이 느려졌어요." },
+    { name: "민준", reaction: "sleepy", text: "다음 문장으로 바로 이어가요." },
+  ],
+  longSilence: [
+    { name: "민준", reaction: "sleepy", text: "침묵이 길어요. 복구 문장으로 넘어가요." },
+    { name: "서연", reaction: "confused", text: "지금은 다음 핵심으로 돌아오면 돼요." },
+  ],
+  unclear: [
+    { name: "민준", reaction: "confused", text: "목소리는 있는데 문장이 흐려요." },
+    { name: "하린", reaction: "confused", text: "조금 더 또박또박 말해보세요." },
+  ],
+  offScript: [
+    { name: "하린", reaction: "confused", text: "대본 핵심어가 잠깐 멀어졌어요." },
+    { name: "도윤", reaction: "attentive", text: "주제어를 다시 잡으면 좋아요." },
+  ],
+};
+
+const audienceReactionMap = {
+  attentive: ["attentive", "excited", "attentive", "confused"],
+  excited: ["excited", "attentive", "excited", "sleepy"],
+  sleepy: ["sleepy", "tooSlow", "sleepy", "confused"],
+  confused: ["confused", "attentive", "confused", "tooSlow"],
+  tooFast: ["tooFast", "confused", "tooFast", "attentive"],
+  tooSlow: ["tooSlow", "sleepy", "attentive", "tooSlow"],
 };
 
 function tokenCount(text) {
@@ -184,7 +230,10 @@ function App() {
   const calibrationRef = useRef({ samples: [], done: false });
   const lastChatKeyRef = useRef("");
   const lastChatAtRef = useRef(0);
+  const chatVariantRef = useRef({});
+  const recentSituationRef = useRef([]);
   const transcriptScrollRef = useRef(null);
+  const chatScrollRef = useRef(null);
   const metricsRef = useRef({
     elapsed: 0,
     transcript: "",
@@ -256,6 +305,12 @@ function App() {
     }
   }, [liveTranscript]);
 
+  useEffect(() => {
+    const container = chatScrollRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+  }, [chat]);
+
   const resetRealtimeRefs = () => {
     transcriptRef.current = "";
     interimRef.current = "";
@@ -272,6 +327,8 @@ function App() {
     calibrationRef.current = { samples: [], done: false };
     lastChatKeyRef.current = "";
     lastChatAtRef.current = 0;
+    chatVariantRef.current = {};
+    recentSituationRef.current = [];
   };
 
   const refreshAiStatus = async () => {
@@ -290,25 +347,37 @@ function App() {
   };
 
   const pushChatForSituation = (nextSituation, now, force = false) => {
+    const recent = recentSituationRef.current;
+    let messageKey = nextSituation;
+    if (!force && recent.length >= 2 && recent.every((item) => item === nextSituation)) {
+      if (nextSituation === "opening") messageKey = "goodPace";
+      else if (nextSituation === "goodPace") messageKey = "opening";
+      else messageKey = "opening";
+    }
+
     const shouldPost =
       force ||
-      nextSituation !== lastChatKeyRef.current ||
-      now - lastChatAtRef.current > 9000 ||
-      ["longSilence", "tooFast", "unclear"].includes(nextSituation);
+      messageKey !== lastChatKeyRef.current ||
+      now - lastChatAtRef.current > 11000 ||
+      ["longSilence", "tooFast", "unclear"].includes(messageKey);
 
     if (!shouldPost || now - lastChatAtRef.current < 3500) return;
 
-    const message = situationMessages[nextSituation] || situationMessages.opening;
+    const variants = reactionPool[messageKey] || reactionPool.opening;
+    const variantIndex = chatVariantRef.current[messageKey] || 0;
+    const message = variants[variantIndex % variants.length];
+    chatVariantRef.current[messageKey] = variantIndex + 1;
+    recentSituationRef.current = [...recent.slice(-2), nextSituation];
     setChat((prev) => [
-      ...prev.slice(-6),
+      ...prev.slice(-18),
       {
-        id: `${now}-${nextSituation}`,
+        id: `${now}-${messageKey}-${variantIndex}`,
         name: message.name,
         text: message.text,
         reaction: message.reaction,
       },
     ]);
-    lastChatKeyRef.current = nextSituation;
+    lastChatKeyRef.current = messageKey;
     lastChatAtRef.current = now;
   };
 
@@ -726,8 +795,8 @@ function App() {
             overlap={overlap}
             reaction={reaction}
             recognitionStatus={recognitionStatus}
-            script={script}
             situation={situation}
+            chatScrollRef={chatScrollRef}
             transcriptScrollRef={transcriptScrollRef}
             voiceActive={voiceActive}
             volume={volume}
@@ -836,7 +905,7 @@ function PracticePage({
   paceLabel,
   reaction,
   recognitionStatus,
-  script,
+  chatScrollRef,
   silenceLabel,
   situation,
   transcriptScrollRef,
@@ -880,7 +949,7 @@ function PracticePage({
               <AudienceTile
                 key={person.name}
                 person={person}
-                reaction={index === 0 ? reaction : softenReaction(reaction, index)}
+                reaction={audienceReactionFor(reaction, index)}
                 active
                 volume={volume}
               />
@@ -901,7 +970,7 @@ function PracticePage({
               <h2>관객 반응</h2>
               <Send size={17} />
             </div>
-            <div className="chat-list">
+            <div className="chat-list" ref={chatScrollRef}>
               {chat.length === 0 ? (
                 <div className="empty-chat">발표가 시작되면 반응이 표시됩니다.</div>
               ) : (
@@ -920,17 +989,11 @@ function PracticePage({
         </aside>
       </div>
 
-      <section className="transcript-layout">
+      <section className="transcript-layout single-transcript">
         <div className="transcript-strip transcript-log">
           <strong>인식된 발표</strong>
           <div className="scroll-text" ref={transcriptScrollRef}>
             {liveTranscript ? <p>{liveTranscript}</p> : <p className="muted">말을 시작하면 여기에 누적됩니다.</p>}
-          </div>
-        </div>
-        <div className="cue-strip">
-          <strong>대본</strong>
-          <div className="scroll-text">
-            <p>{script}</p>
           </div>
         </div>
       </section>
@@ -958,27 +1021,20 @@ function ReportPage({ aiStatus, error, report, reset, scriptFeedback, spokenWord
   );
 }
 
-function softenReaction(reaction, index) {
-  if (reaction === "tooFast" && index === 2) return "confused";
-  if (reaction === "tooSlow" && index === 1) return "sleepy";
-  if (reaction === "excited" && index === 3) return "attentive";
-  return reaction;
+function audienceReactionFor(reaction, index) {
+  return audienceReactionMap[reaction]?.[index] || "attentive";
 }
 
 function AudienceTile({ person, reaction, active, volume }) {
   return (
-    <article className={`audience-tile ${active ? "active" : ""}`}>
-      <div className={`avatar ${person.color} ${reaction}`} style={{ "--bob": `${Math.min(volume * 30, 1.6)}px` }}>
-        <div className={`accessory ${person.accessory}`} />
-        <div className="ear left" />
-        <div className="ear right" />
-        <div className="face">
-          <span className="eye left" />
-          <span className="eye right" />
-          <span className="mouth" />
-          <span className="cheek left" />
-          <span className="cheek right" />
-        </div>
+    <article className={`audience-tile ${person.color} ${active ? "active" : ""}`}>
+      <div
+        className={`avatar character ${person.style} ${reaction}`}
+        style={{ "--bob": `${Math.min(volume * 32, 2)}px` }}
+      >
+        <span className="character-shadow" />
+        <img className="character-asset" alt={`${person.name} audience avatar`} src={person.avatar} />
+        <span className="reaction-mark">{reactionCopy[reaction]}</span>
       </div>
       <div className="audience-info">
         <strong>{person.name}</strong>

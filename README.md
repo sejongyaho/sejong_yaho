@@ -29,9 +29,14 @@ GEMINI_MODEL=gemini-2.5-flash
 backend/
   app/main.py
 frontend/
+  src/assets/characters/
   src/App.jsx
   src/styles.css
 docker-compose.yml
 .env.example
 ```
+
+## Assets
+
+- Audience characters use DiceBear Avataaars SVG avatars, generated through the DiceBear HTTP API. Avataaars is free for personal and commercial use.
 

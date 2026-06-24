@@ -1,4 +1,14 @@
 services:
+  server:
+    build:
+      context: ./server
+    environment:
+      - PORT=8020
+    ports:
+      - "8020:8020"
+    volumes:
+      - ./server/src:/app/src
+
   backend:
     build:
       context: ./backend

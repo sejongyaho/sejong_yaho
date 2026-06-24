@@ -1,8 +1,10 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
-import { BarChart3, Clock3, FileText, Leaf, Loader2, MessageCircle, Mic, Play, Search, RefreshCcw, SquarePlay, Upload } from "lucide-react";
+import { BarChart3, FileText, Leaf, Loader2, Play, Search, RefreshCcw, SquarePlay, Upload } from "lucide-react";
+import PreFeedbackPage from "./components/PreFeedbackPage";
 import PracticePage from "./components/PracticePage";
 import ReferenceQuickAnalysis from "./components/ReferenceQuickAnalysis";
 import { audience, situationMessages } from "./data/audience";
+import { preFeedbackMock } from "./data/preFeedbackMock";
 import {
   buildPreparationSignature,
   clamp,
@@ -41,17 +43,14 @@ function clearStoredSetup() {
   window.localStorage.removeItem(SETUP_STORAGE_KEY);
 }
 
-const analysisItems = [
-  { label: "말 빠르기", icon: Mic },
-  { label: "침묵 구간", icon: Clock3 },
-  { label: "대본 전달력", icon: BarChart3 },
-  { label: "쿠션어 사용", icon: MessageCircle },
-  { label: "전환 문장 타이밍", icon: Clock3 },
-  { label: "마무리 밀도", icon: BarChart3 },
-];
+function pageFromPath(pathname) {
+  if (pathname === "/pre-feedback" || pathname === "/feedback/pre") return "preFeedback";
+  if (pathname === "/records") return "report";
+  return "setup";
+}
 
 function App() {
-  const [page, setPage] = useState("setup");
+  const [page, setPage] = useState(() => pageFromPath(window.location.pathname));
   const [script, setScript] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [isPresenting, setIsPresenting] = useState(false);
@@ -705,6 +704,9 @@ function App() {
     setIsFinishing(true);
     setIsPresenting(false);
     isPresentingRef.current = false;
+    setError("");
+    setReport(null);
+    setPage("report");
     const finalTranscript = `${transcriptRef.current} ${interimRef.current || lastInterimRef.current}`.trim();
     cleanupRecording();
     try {
@@ -717,7 +719,6 @@ function App() {
       if (!response.ok) throw new Error("리포트를 만들지 못했습니다.");
       setReport(await response.json());
       refreshAiStatus();
-      setPage("report");
     } catch (err) {
       setError(err.message || "종료 중 문제가 생겼습니다.");
     } finally {
@@ -728,6 +729,7 @@ function App() {
   const reset = () => {
     cleanupRecording();
     setPage("setup");
+    window.history.pushState({}, "", "/");
     setSessionId("");
     sessionIdRef.current = "";
     setIsPresenting(false);
@@ -760,8 +762,37 @@ function App() {
   const backToSetup = () => {
     cleanupRecording();
     setPage("setup");
+    window.history.pushState({}, "", "/");
     setIsPresenting(false);
     isPresentingRef.current = false;
+  };
+
+  const goToSetup = () => {
+    cleanupRecording();
+    setPage("setup");
+    window.history.pushState({}, "", "/");
+    setIsPresenting(false);
+    isPresentingRef.current = false;
+  };
+
+  const goToPreFeedback = () => {
+    cleanupRecording();
+    setPage("preFeedback");
+    window.history.pushState({}, "", "/pre-feedback");
+    setIsPresenting(false);
+    isPresentingRef.current = false;
+  };
+
+  const goToRecords = () => {
+    cleanupRecording();
+    setPage("report");
+    window.history.pushState({}, "", "/records");
+    setIsPresenting(false);
+    isPresentingRef.current = false;
+  };
+
+  const handleDeferredFeedbackAction = (actionName) => {
+    console.info(`Pre-feedback action queued: ${actionName}`);
   };
 
   useEffect(() => () => cleanupRecording(), []);
@@ -769,6 +800,23 @@ function App() {
   useEffect(() => {
     refreshAiStatus();
   }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setPage(pageFromPath(window.location.pathname));
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  const topNavigation = (
+    <AppNav
+      currentPage={page}
+      goToPreFeedback={goToPreFeedback}
+      goToRecords={goToRecords}
+      goToSetup={goToSetup}
+    />
+  );
 
   return (
     <main className={`app-shell page-${page}`}>
@@ -794,6 +842,20 @@ function App() {
             setScript={setScript}
             preparePresentation={preparePresentation}
             startPresentation={startPresentation}
+            topNavigation={topNavigation}
+            openPreFeedback={goToPreFeedback}
+          />
+        )}
+
+        {page === "preFeedback" && (
+          <PreFeedbackPage
+            data={preFeedbackMock}
+            onRewriteScript={() => handleDeferredFeedbackAction("rewrite-script")}
+            onShortenScript={() => handleDeferredFeedbackAction("shorten-to-three-minutes")}
+            onSuggestSlideCopy={() => handleDeferredFeedbackAction("suggest-slide-copy")}
+            onStartPractice={startPresentation}
+            sourceScript={script}
+            topNavigation={topNavigation}
           />
         )}
 
@@ -824,6 +886,7 @@ function App() {
           <ReportPage
             aiStatus={aiStatus}
             error={error}
+            isFinishing={isFinishing}
             report={report}
             reset={reset}
             materialFeedback={materialFeedback}
@@ -833,6 +896,22 @@ function App() {
         )}
       </section>
     </main>
+  );
+}
+
+function AppNav({ currentPage, goToPreFeedback, goToRecords, goToSetup }) {
+  return (
+    <nav className="brand-nav" aria-label="서비스">
+      <button className="brand-mark" type="button" onClick={goToSetup} aria-label="Pitch up">
+        <span className="brand-spark"><Leaf size={13} /></span>
+        Pitch up
+      </button>
+      <div className="nav-links" aria-label="주요 메뉴">
+        <button className={currentPage === "preFeedback" ? "active" : ""} type="button" onClick={goToPreFeedback}>사전 피드백</button>
+        <button className={currentPage === "setup" || currentPage === "practice" ? "active" : ""} type="button" onClick={goToSetup}>발표 연습</button>
+        <button className={currentPage === "report" ? "active" : ""} type="button" onClick={goToRecords}>기록</button>
+      </div>
+    </nav>
   );
 }
 
@@ -856,12 +935,15 @@ function SetupPage({
   setScript,
   preparePresentation,
   startPresentation,
+  topNavigation,
+  openPreFeedback,
 }) {
   const [dragging, setDragging] = useState(false);
+  const [shouldScrollToFeedback, setShouldScrollToFeedback] = useState(false);
   const fileInputRef = useRef(null);
+  const preflightRef = useRef(null);
   const scriptWords = tokenCount(script);
   const estimatedMinutes = Math.max(1, Math.round(scriptWords / 135));
-  const keywordEstimate = scriptWords ? Math.min(12, Math.max(1, Math.round(scriptWords / 18))) : 0;
 
   const handleDrop = (event) => {
     event.preventDefault();
@@ -869,36 +951,29 @@ function SetupPage({
     importMixedFiles(event.dataTransfer.files);
   };
 
+  const handleScriptFeedback = async () => {
+    setShouldScrollToFeedback(true);
+    await preparePresentation();
+  };
+
+  useEffect(() => {
+    if (!shouldScrollToFeedback || (!scriptFeedback && !materialFeedback)) return;
+    preflightRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setShouldScrollToFeedback(false);
+  }, [materialFeedback, scriptFeedback, shouldScrollToFeedback]);
+
   return (
     <>
-      <nav className="brand-nav" aria-label="서비스">
-        <a className="brand-mark" href="#top" aria-label="온라인 발표 연습실">
-          <span className="brand-spark"><Leaf size={13} /></span>
-          rehearsal note
-        </a>
-        <div className="nav-links">
-          <a href="#script">대본</a>
-          <a href="#insight">피드백</a>
-          <a href="#script">시작</a>
-        </div>
-      </nav>
+      {topNavigation}
 
       <header className="product-header">
         <div className="hero-copy">
           <p className="eyebrow">Presentation rehearsal</p>
           <h1>
-            내가 닮을 발표
+            PT를 쉽게
             <span>Pitch up</span>
           </h1>
           <div className="hero-actions">
-            <button
-              className="secondary-button"
-              disabled={isPreparing || isStarting}
-              onClick={preparePresentation}
-            >
-              {isPreparing ? <Loader2 className="spin" size={18} /> : <BarChart3 size={18} />}
-              {isPreparing ? "사전 분석 중" : "사전 분석"}
-            </button>
             <button
               className="primary-button"
               disabled={isPreparing || isStarting}
@@ -935,10 +1010,16 @@ function SetupPage({
             <FileText size={20} />
             <strong>대본이나 발표 자료를 여기에 놓으세요</strong>
             <span>대본 파일과 발표 자료 파일을 한 번에 올리면, 대본은 자동으로 읽고 PDF/PPTX는 자료 분석 대상으로 함께 등록합니다.</span>
-            <button className="file-button" type="button" disabled={isImporting} onClick={() => fileInputRef.current?.click()}>
-              {isImporting ? <Loader2 className="spin" size={17} /> : <Upload size={17} />}
-              {isImporting ? "불러오는 중" : "파일 불러오기"}
-            </button>
+            <div className="script-drop-actions">
+              <button className="script-feedback-button" type="button" disabled={isPreparing || isStarting} onClick={handleScriptFeedback}>
+                {isPreparing ? <Loader2 className="spin" size={17} /> : <BarChart3 size={17} />}
+                {isPreparing ? "분석 중" : "대본 피드백"}
+              </button>
+              <button className="file-button" type="button" disabled={isImporting} onClick={() => fileInputRef.current?.click()}>
+                {isImporting ? <Loader2 className="spin" size={17} /> : <Upload size={17} />}
+                {isImporting ? "불러오는 중" : "파일 불러오기"}
+              </button>
+            </div>
             <input
               ref={fileInputRef}
               hidden
@@ -962,6 +1043,62 @@ function SetupPage({
       </header>
 
       {error && <div className="notice">{error}</div>}
+
+      {(scriptFeedback || materialFeedback) ? (
+        <section className="preflight-feedback" ref={preflightRef}>
+          <div className="section-heading">
+            <h3>발표 시작 전 피드백</h3>
+            <span>{sessionPrepared ? "분석 완료" : "다시 분석 필요"}</span>
+          </div>
+          <div className="preflight-grid">
+            <article className="preflight-card">
+              <strong>대본 피드백</strong>
+              {scriptFeedback ? (
+                <>
+                  <div className="preflight-score">{scriptFeedback.score ?? 0}점</div>
+                  <p>단어 수 {scriptFeedback.word_count ?? 0}개, 문장 평균 {scriptFeedback.average_sentence_words ?? 0}단어</p>
+                  <ul>
+                    {(scriptFeedback.suggestions || []).slice(0, 3).map((suggestion) => (
+                      <li key={suggestion}>{suggestion}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p>대본 피드백 버튼을 누르면 대본 전달력 피드백이 여기에 표시됩니다.</p>
+              )}
+            </article>
+
+            <article className="preflight-card">
+              <strong>발표 자료 피드백</strong>
+              {materialFeedback ? (
+                <>
+                  <div className="preflight-metrics">
+                    <span>예상 {materialFeedback.estimated_minutes ?? 0}분</span>
+                    <span>시인성 {materialFeedback.clarity_score ?? 0}</span>
+                    <span>통일성 {materialFeedback.consistency_score ?? 0}</span>
+                    <span>주제 적합도 {materialFeedback.topic_fit_score ?? 0}</span>
+                  </div>
+                  <p>{materialFeedback.summary}</p>
+                  {materialFeedback.notes?.length ? (
+                    <ul>
+                      {materialFeedback.notes.slice(0, 3).map((note) => (
+                        <li key={note}>{note}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </>
+              ) : (
+                <p>발표 자료를 함께 올리면 자료별 시인성과 주제 적합도 피드백이 여기에 표시됩니다.</p>
+              )}
+            </article>
+          </div>
+          <div className="preflight-actions">
+            <button className="secondary-button" type="button" onClick={openPreFeedback}>
+              자세히 수정해보기
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <div className="reference-link-panel">
         <div className="reference-link-copy">
@@ -1003,108 +1140,11 @@ function SetupPage({
           )}
         </div>
       </div>
-
-      <section className="setup-grid">
-        <aside className="hero-dashboard setup-dashboard" aria-label="리허설 프리뷰">
-          <div className="dashboard-topline">
-            <span>session brief</span>
-            <strong>{scriptWords || 0} words</strong>
-          </div>
-          <div className="preview-metrics">
-            <div className="preview-card raised">
-              <Clock3 size={18} />
-              <span>예상 시간</span>
-              <strong>{estimatedMinutes}<small>분</small></strong>
-            </div>
-            <div className="preview-card">
-              <BarChart3 size={18} />
-              <span>피드백</span>
-              <strong>{analysisItems.length}<small>가지</small></strong>
-            </div>
-          </div>
-          <div className="mini-chart" aria-label="리허설 분석 예시">
-            <div className="brief-line">
-              <span>pace</span>
-              <strong>5.9 syll/sec</strong>
-            </div>
-            <div className="brief-line">
-              <span>pause</span>
-              <strong>2.4 sec longest</strong>
-            </div>
-            <div className="brief-line">
-              <span>script</span>
-              <strong>{keywordEstimate ? `핵심어 ${keywordEstimate}개 후보` : "대본 입력 대기"}</strong>
-            </div>
-            <p className="brief-copy">문장 끝에서 호흡이 조금 짧습니다. 두 번째 전환부 앞에 쉼표를 하나 더 두세요.</p>
-          </div>
-        </aside>
-
-        <aside className="ready-panel" id="insight">
-          <div className="service-checklist">
-            <h2>조용히 봐드릴 부분</h2>
-            <p>발표를 끊지 않고, 끝난 뒤 필요한 부분만 부드럽게 정리합니다.</p>
-            {analysisItems.map(({ icon: Icon, label }) => (
-              <span key={label}><Icon size={15} />{label}</span>
-            ))}
-          </div>
-        </aside>
-      </section>
-
-      {(scriptFeedback || materialFeedback) ? (
-        <section className="preflight-feedback">
-          <div className="section-heading">
-            <h3>발표 시작 전 피드백</h3>
-            <span>{sessionPrepared ? "분석 완료" : "다시 분석 필요"}</span>
-          </div>
-          <div className="preflight-grid">
-            <article className="preflight-card">
-              <strong>대본 피드백</strong>
-              {scriptFeedback ? (
-                <>
-                  <div className="preflight-score">{scriptFeedback.score ?? 0}점</div>
-                  <p>단어 수 {scriptFeedback.word_count ?? 0}개, 문장 평균 {scriptFeedback.average_sentence_words ?? 0}단어</p>
-                  <ul>
-                    {(scriptFeedback.suggestions || []).slice(0, 3).map((suggestion) => (
-                      <li key={suggestion}>{suggestion}</li>
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                <p>사전 분석을 받으면 대본 전달력 피드백이 여기에 표시됩니다.</p>
-              )}
-            </article>
-
-            <article className="preflight-card">
-              <strong>발표 자료 피드백</strong>
-              {materialFeedback ? (
-                <>
-                  <div className="preflight-metrics">
-                    <span>예상 {materialFeedback.estimated_minutes ?? 0}분</span>
-                    <span>시인성 {materialFeedback.clarity_score ?? 0}</span>
-                    <span>통일성 {materialFeedback.consistency_score ?? 0}</span>
-                    <span>주제 적합도 {materialFeedback.topic_fit_score ?? 0}</span>
-                  </div>
-                  <p>{materialFeedback.summary}</p>
-                  {materialFeedback.notes?.length ? (
-                    <ul>
-                      {materialFeedback.notes.slice(0, 3).map((note) => (
-                        <li key={note}>{note}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </>
-              ) : (
-                <p>발표 자료를 함께 올리면 자료별 시인성과 주제 적합도 피드백이 여기에 표시됩니다.</p>
-              )}
-            </article>
-          </div>
-        </section>
-      ) : null}
     </>
   );
 }
 
-function ReportPage({ aiStatus, error, report, reset, materialFeedback, scriptFeedback, spokenWords }) {
+function ReportPage({ aiStatus, error, isFinishing, report, reset, materialFeedback, scriptFeedback, spokenWords }) {
   return (
     <>
       <header className="product-header compact">
@@ -1119,9 +1159,91 @@ function ReportPage({ aiStatus, error, report, reset, materialFeedback, scriptFe
       </header>
 
       {error && <div className="notice">{error}</div>}
+      {isFinishing && !report ? (
+        <section className="report-loading-card">
+          <Loader2 className="spin" size={22} />
+          <div>
+            <strong>리포트를 정리하고 있어요</strong>
+            <p>방금 연습한 발화와 대본 반영도를 분석해 결과를 만들고 있습니다.</p>
+          </div>
+        </section>
+      ) : null}
       {report ? <Report aiStatus={aiStatus} report={report} materialFeedback={materialFeedback} scriptFeedback={scriptFeedback} spokenWords={spokenWords} /> : null}
     </>
   );
+}
+
+const HIDDEN_REPORT_MARKERS = ["신지영", "운율 중심", "연구를 반영", "criteria_basis", "rubric", "내부 기준"];
+
+const FEEDBACK_TOPICS = {
+  rhythm: ["리듬", "구간별", "변동", "일정"],
+  pace: ["속도", "말속도", "빠른", "빨라", "느린", "느려", "음절", "wpm"],
+  pause: ["침묵", "휴지", "멈춤", "쉬는", "쉼", "공백", "복구"],
+  script: ["대본", "핵심어", "키워드", "메시지", "반영"],
+  material: ["자료", "슬라이드", "시인성", "발표자료"],
+  ending: ["마무리", "결론", "감사"],
+};
+
+function cleanVisibleText(value) {
+  return String(value || "")
+    .replace("논문에서 전달력 높은 말하기로 제시된 보통 발화 속도(초당 약 6음절)에 가깝습니다.", "말 속도가 안정적이라 핵심 내용이 따라가기 좋습니다.")
+    .replace("전체 발화 중 휴지 비율이 논문에서 제시한 전달력 높은 말하기의 범위에 가깝습니다.", "쉬는 타이밍이 과하지 않아 발표 흐름이 안정적입니다.")
+    .replace("휴지 비율이 25% 이상이면 전달력이 떨어질 수 있습니다.", "쉬는 시간이 길어 흐름이 끊겨 보일 수 있습니다.")
+    .replaceAll("논문에서 제시한 전달력 높은 말하기의 ", "")
+    .replaceAll("논문에서 전달력 높은 말하기로 제시된 ", "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function feedbackTopicKey(item) {
+  const text = cleanVisibleText(item).toLowerCase();
+  const found = Object.entries(FEEDBACK_TOPICS).find(([, keywords]) => keywords.some((keyword) => text.includes(keyword.toLowerCase())));
+  return found ? found[0] : text.slice(0, 32);
+}
+
+function dedupeTextItems(items = [], limit = Infinity) {
+  const seenTopics = new Set();
+  const seenTexts = new Set();
+  const result = [];
+  items.forEach((item) => {
+    const text = cleanVisibleText(item);
+    const exactKey = text.replace(/\s+/g, "");
+    const topicKey = feedbackTopicKey(text);
+    if (!text || seenTexts.has(exactKey) || seenTopics.has(topicKey) || result.length >= limit) return;
+    seenTexts.add(exactKey);
+    seenTopics.add(topicKey);
+    result.push(text);
+  });
+  return result;
+}
+
+function dedupeIssues(issues = [], limit = Infinity) {
+  const seenTypes = new Set();
+  const result = [];
+  issues.forEach((issue) => {
+    const typeKey = issue.type || issue.title;
+    if (!typeKey || seenTypes.has(typeKey) || result.length >= limit) return;
+    seenTypes.add(typeKey);
+    result.push({
+      ...issue,
+      title: cleanVisibleText(issue.title),
+      evidence: cleanVisibleText(issue.evidence),
+      spoken_excerpt: cleanVisibleText(issue.spoken_excerpt),
+      suggestion: cleanVisibleText(issue.suggestion),
+    });
+  });
+  return result;
+}
+
+function visibleReportSummary(report) {
+  const summary = cleanVisibleText(report.summary);
+  if (!summary || HIDDEN_REPORT_MARKERS.some((marker) => summary.includes(marker))) {
+    const score = report.overall_score ?? 0;
+    if (score >= 80) return "전체 흐름은 안정적입니다. 다음 연습에서는 강조와 마무리만 조금 더 선명하게 다듬어 보세요.";
+    if (score >= 60) return "발표의 큰 흐름은 잡혀 있습니다. 속도, 쉬는 타이밍, 핵심어 전달을 조금 더 정리하면 훨씬 또렷해집니다.";
+    return "이번 연습에서는 흐름을 먼저 안정시키는 것이 좋습니다. 긴 침묵과 핵심어 전달을 우선 다듬어 보세요.";
+  }
+  return summary;
 }
 
 function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWords }) {
@@ -1131,10 +1253,14 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
   const scoreVisible = analysisMeta.score_visible !== false;
   const score = report.overall_score ?? 0;
   const quickSummary = buildQuickSummary(report);
-  const issueLog = report.issue_log || [];
+  const reportSummary = visibleReportSummary(report);
+  const issueLog = dedupeIssues(report.issue_log || [], 6);
   const timelineLog = report.timeline_log || [];
-  const priorityFeedback = report.detailed_feedback?.priority_feedback || report.improvements || [];
-  const practicePlan = report.detailed_feedback?.practice_plan || [];
+  const strengths = dedupeTextItems(report.strengths || [], 4);
+  const priorityFeedback = dedupeTextItems(report.detailed_feedback?.priority_feedback || report.improvements || [], 5);
+  const practicePlan = dedupeTextItems(report.detailed_feedback?.practice_plan || [], 5);
+  const keywordFeedback = report.keyword_feedback || {};
+  const presentationMaterial = report.presentation_material || materialFeedback || null;
 
   return (
     <section className="report-panel service-report">
@@ -1143,7 +1269,7 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
           <p className="eyebrow">{aiLive ? "AI Coaching" : "Basic Coaching"} · {analysisMeta.summary_label || "정식 결과"}</p>
           <h2>{!scoreVisible ? "말한 내용이 더 쌓이면 더 정확하게 볼 수 있어요" : score >= 80 ? "전달력이 좋은 발표였어요" : score >= 60 ? "조금만 다듬으면 더 좋아져요" : "발표 흐름을 다시 잡아보세요"}</h2>
           <p>{quickSummary}</p>
-          <p className="report-summary-detail">{report.summary}</p>
+          <p className="report-summary-detail">{reportSummary}</p>
         </div>
         <div className="service-score">
           <strong>{scoreVisible ? score : "-"}</strong>
@@ -1181,9 +1307,47 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
       ) : null}
 
       <div className="feedback-columns service-feedback">
-        <FeedbackList title="잘한 점" items={(report.strengths || []).slice(0, 4)} />
-        <FeedbackList title="우선 고칠 점" items={priorityFeedback.slice(0, 5)} />
+        <FeedbackList title="잘한 점" items={strengths} />
+        <FeedbackList title="우선 고칠 점" items={priorityFeedback} />
       </div>
+
+      {presentationMaterial ? (
+        <section className="material-analysis-card">
+          <div className="section-heading">
+            <h3>발표 자료 분석</h3>
+            <span>{presentationMaterial.overall_score ?? 0}점</span>
+          </div>
+          <div className="detail-score-grid material-grid">
+            <ScoreDetail label="예상 발표 시간" value={`${presentationMaterial.estimated_minutes ?? 0}분`} hint="대본과 자료를 함께 기준으로 계산합니다." />
+            <ScoreDetail label="시인성" value={`${presentationMaterial.clarity_score ?? 0}/100`} hint="글자 크기와 밀도를 봅니다." />
+            <ScoreDetail label="통일성" value={`${presentationMaterial.consistency_score ?? 0}/100`} hint="슬라이드 간 표현 흐름을 봅니다." />
+            <ScoreDetail label="주제 적합도" value={`${presentationMaterial.topic_fit_score ?? 0}/100`} hint="대본과 자료의 핵심 주제가 얼마나 맞는지 봅니다." />
+          </div>
+          <p className="material-summary">{presentationMaterial.summary}</p>
+          {presentationMaterial.notes?.length ? (
+            <ul className="material-notes">
+              {presentationMaterial.notes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          ) : null}
+          {presentationMaterial.files?.length ? (
+            <div className="material-file-cards">
+              {presentationMaterial.files.map((file) => (
+                <article className="material-file-card" key={file.filename}>
+                  <strong>{file.filename}</strong>
+                  <p>{file.summary || "업로드한 발표 자료 분석을 완료했습니다."}</p>
+                  <div className="material-file-meta">
+                    <span>{String(file.kind || "file").toUpperCase()}</span>
+                    <span>{file.page_count || file.slide_count || 0}장</span>
+                    <span>{file.overall_score ?? 0}/100</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="issue-section">
         <div className="section-heading">
@@ -1219,11 +1383,10 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
 
       <section className="report-two-column">
         <div className="keyword-card">
-          <h3>말 습관 분석</h3>
-          <p>말한 내용을 바탕으로 자주 나온 말 습관을 정리했습니다.</p>
-          <KeywordGroup title="추임새" items={Object.entries(speechHabits.filler_counts || {}).map(([key, value]) => `${key} ${value}회`)} emptyText="눈에 띄는 추임새가 많지 않습니다." />
-          <KeywordGroup title="반복 표현" items={(speechHabits.repeated_tokens || []).map((item) => `${item.token} ${item.count}회`)} emptyText="과도한 반복 표현은 크지 않습니다." />
-          <KeywordGroup title="주의 메모" items={speechHabits.notes || []} emptyText="특이한 말 습관 메모가 없습니다." />
+          <h3>말한 내용 핵심어</h3>
+          <p>말한 내용에서 확인된 핵심어와 빠진 핵심어입니다.</p>
+          <KeywordGroup title="반영됨" items={keywordFeedback.covered_keywords || []} />
+          <KeywordGroup title="빠짐" items={keywordFeedback.missed_keywords || []} emptyText="크게 빠진 핵심어가 없습니다." />
         </div>
         <div className="practice-plan-card">
           <h3>다음 연습 계획</h3>

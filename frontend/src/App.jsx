@@ -1,14 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
-  CheckCircle2,
+  FileText,
   Loader2,
-  Mic,
-  MicOff,
   Play,
   RefreshCcw,
   Send,
   Square,
+  Upload,
 } from "lucide-react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8010";
@@ -580,14 +579,20 @@ function App() {
       setRecognitionStatus("마이크 준비 중");
       resetRealtimeRefs();
 
-      await setupAudioMeter();
       setPage("practice");
       setIsPresenting(true);
       isPresentingRef.current = true;
       startTimeRef.current = Date.now();
       lastRecognizedAtRef.current = Date.now();
-      setupSpeechRecognition();
       startRealtimeClock();
+      setupSpeechRecognition();
+
+      try {
+        await setupAudioMeter();
+      } catch {
+        setRecognitionStatus("마이크 권한 필요");
+        setError("마이크 권한을 허용하면 속도와 침묵 분석이 시작됩니다.");
+      }
 
       metricIntervalRef.current = window.setInterval(() => {
         postMetric().catch(() => {
@@ -596,10 +601,36 @@ function App() {
       }, 3000);
     } catch (err) {
       cleanupRecording();
+      setPage("setup");
+      setIsPresenting(false);
+      isPresentingRef.current = false;
       setError(err.message || "시작 중 문제가 생겼습니다.");
     } finally {
       setIsStarting(false);
     }
+  };
+
+  const importScriptFile = (file) => {
+    if (!file) return;
+    setError("");
+    if (file.size > 1024 * 1024 * 2) {
+      setError("2MB 이하의 텍스트 파일만 불러올 수 있습니다.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "").trim();
+      if (!text) {
+        setError("파일에서 읽을 수 있는 대본 내용을 찾지 못했습니다.");
+        return;
+      }
+      setScript(text);
+    };
+    reader.onerror = () => {
+      setError("파일을 읽지 못했습니다. txt 또는 md 파일로 다시 시도해 주세요.");
+    };
+    reader.readAsText(file, "UTF-8");
   };
 
   const finishPresentation = async () => {
@@ -675,6 +706,7 @@ function App() {
             aiStatus={aiStatus}
             error={error}
             isStarting={isStarting}
+            importScriptFile={importScriptFile}
             script={script}
             setScript={setScript}
             startPresentation={startPresentation}
@@ -720,61 +752,74 @@ function App() {
   );
 }
 
-function SetupPage({ aiStatus, error, isStarting, script, setScript, startPresentation }) {
+function SetupPage({ aiStatus, error, importScriptFile, isStarting, script, setScript, startPresentation }) {
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef(null);
+  const wordCount = tokenCount(script);
+  const minutes = Math.max(1, Math.round(wordCount / 120));
+
+  const handleDrop = (event) => {
+    event.preventDefault();
+    setDragging(false);
+    importScriptFile(event.dataTransfer.files?.[0]);
+  };
+
   return (
-    <>
-      <header className="product-header">
-        <div>
-          <p className="eyebrow">Rehearsal Studio</p>
-          <h1>발표 대본을 넣고 바로 연습하세요</h1>
-          <p>발표 중에는 속도, 침묵, 전달력을 조용히 분석하고 끝나면 핵심 피드백만 보여드립니다.</p>
-        </div>
-        <button className="primary-button" disabled={isStarting} onClick={startPresentation}>
-          {isStarting ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-          발표 시작
-        </button>
+    <section className="setup-focus">
+      <header className="setup-hero">
+        <p className="eyebrow">Presentation Coach</p>
+        <h1>대본을 올리면, 리허설이 시작됩니다</h1>
+        <p>말의 리듬과 놓친 순간만 선명하게 남깁니다.</p>
       </header>
 
       {error && <div className="notice">{error}</div>}
 
-      <section className="setup-grid">
-        <div className="script-panel setup-script">
-          <div className="panel-heading">
-            <h2>발표 대본</h2>
-          </div>
+      <section className="script-composer">
+        <div className="composer-meta">
+          <span>{wordCount}개 단어</span>
+          <span>예상 {minutes}분</span>
+          <span>{aiStatus?.live ? "AI 리포트 연결됨" : "기본 분석 사용"}</span>
+        </div>
+        <div className="script-panel setup-script dark-script">
           <textarea
             value={script}
             onChange={(event) => setScript(event.target.value)}
-            placeholder="여기에 발표 대본을 붙여넣으세요."
+            placeholder={"여기에 발표 대본을 붙여넣으세요.\n\n예) 안녕하세요. 오늘은..."}
           />
         </div>
 
-        <aside className="ready-panel">
-          <div className={`service-status ${aiStatus?.live ? "ok" : "warn"}`}>
-            <CheckCircle2 size={18} />
-            <div>
-              <strong>
-                {aiStatus?.live ? "AI 리포트 준비 완료" : aiStatus?.configured ? "AI 리포트 대기 중" : "기본 리포트로 진행"}
-              </strong>
-              <p>
-                {aiStatus?.live
-                  ? "발표 종료 후 AI 코칭이 반영됩니다."
-                  : aiStatus?.configured
-                    ? "현재는 기본 리포트로 진행하고, 연결이 회복되면 AI 코칭이 반영됩니다."
-                    : "키를 연결하면 발표 후 AI 코칭이 추가됩니다."}
-              </p>
-            </div>
-          </div>
+        <div
+          className={`file-dropzone ${dragging ? "dragging" : ""}`}
+          onDragEnter={(event) => {
+            event.preventDefault();
+            setDragging(true);
+          }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={() => setDragging(false)}
+          onDrop={handleDrop}
+        >
+          <FileText size={20} />
+          <strong>대본 파일을 끌어다 놓거나 선택하세요</strong>
+          <span>txt, md 같은 텍스트 파일을 바로 대본으로 불러옵니다.</span>
+          <button className="file-button" type="button" onClick={() => fileInputRef.current?.click()}>
+            <Upload size={17} />
+            파일 추가
+          </button>
+          <input
+            ref={fileInputRef}
+            hidden
+            type="file"
+            accept=".txt,.md,.text,.csv,.srt"
+            onChange={(event) => importScriptFile(event.target.files?.[0])}
+          />
+        </div>
 
-          <div className="service-checklist">
-            <h2>분석 항목</h2>
-            <span>말 빠르기</span>
-            <span>침묵 구간</span>
-            <span>대본 전달력</span>
-          </div>
-        </aside>
+        <button className="start-button" disabled={isStarting} onClick={startPresentation}>
+          {isStarting ? <Loader2 className="spin" size={19} /> : <Play size={19} />}
+          발표 시작
+        </button>
       </section>
-    </>
+    </section>
   );
 }
 
@@ -956,6 +1001,10 @@ function Report({ aiStatus, report, scriptFeedback, spokenWords }) {
   const aiLive = Boolean(report.used_gemini);
   const score = report.overall_score ?? 0;
   const quickSummary = buildQuickSummary(report);
+  const issueLog = report.issue_log || [];
+  const priorityFeedback = report.detailed_feedback?.priority_feedback || report.improvements || [];
+  const practicePlan = report.detailed_feedback?.practice_plan || [];
+  const keywordFeedback = report.keyword_feedback || {};
 
   return (
     <section className="report-panel service-report">
@@ -964,6 +1013,7 @@ function Report({ aiStatus, report, scriptFeedback, spokenWords }) {
           <p className="eyebrow">{aiLive ? "AI Coaching" : "Basic Coaching"}</p>
           <h2>{score >= 80 ? "전달력이 좋은 발표였어요" : score >= 60 ? "조금만 다듬으면 더 좋아져요" : "발표 흐름을 다시 잡아보세요"}</h2>
           <p>{quickSummary}</p>
+          <p className="report-summary-detail">{report.summary}</p>
         </div>
         <div className="service-score">
           <strong>{score}</strong>
@@ -977,16 +1027,96 @@ function Report({ aiStatus, report, scriptFeedback, spokenWords }) {
         <ResultPill label="대본 전달" value={userReportDelivery(report)} />
       </div>
 
-      <div className="feedback-columns service-feedback">
-        <FeedbackList title="잘한 점" items={(report.strengths || []).slice(0, 3)} />
-        <FeedbackList title="다음 연습에서 고칠 점" items={(report.improvements || []).slice(0, 4)} />
+      <div className="detail-score-grid">
+        <ScoreDetail label="평균 속도" value={`${report.pace?.syllables_per_second ?? 0} 음절/초`} hint="목표 5.6-6.3" />
+        <ScoreDetail label="최장 침묵" value={`${report.silence?.longest_seconds ?? 0}초`} hint="5초 이상이면 위험" />
+        <ScoreDetail label="휴지 비율" value={`${report.silence?.pause_ratio_percent ?? 0}%`} hint="권장 약 15%" />
+        <ScoreDetail label="키워드 반영" value={`${keywordFeedback.coverage_percent ?? report.delivery_match?.similarity_percent ?? 0}%`} hint="대본 핵심어 기준" />
       </div>
+
+      <div className="feedback-columns service-feedback">
+        <FeedbackList title="잘한 점" items={(report.strengths || []).slice(0, 4)} />
+        <FeedbackList title="우선 고칠 점" items={priorityFeedback.slice(0, 5)} />
+      </div>
+
+      <section className="issue-section">
+        <div className="section-heading">
+          <h3>문제 구간 로그</h3>
+          <span>{issueLog.length}개 구간</span>
+        </div>
+        <div className="issue-list">
+          {issueLog.map((issue) => (
+            <IssueItem key={`${issue.time}-${issue.type}-${issue.title}`} issue={issue} />
+          ))}
+        </div>
+      </section>
+
+      <section className="report-two-column">
+        <div className="keyword-card">
+          <h3>대본 핵심어 반영</h3>
+          <p>말한 내용에서 확인된 핵심어와 빠진 핵심어입니다.</p>
+          <KeywordGroup title="반영됨" items={keywordFeedback.covered_keywords || []} />
+          <KeywordGroup title="빠짐" items={keywordFeedback.missed_keywords || []} emptyText="크게 빠진 핵심어가 없습니다." />
+        </div>
+        <div className="practice-plan-card">
+          <h3>다음 연습 계획</h3>
+          <ol>
+            {practicePlan.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ol>
+        </div>
+      </section>
 
       <div className="report-note">
         {aiLive ? "AI 분석이 반영된 리포트입니다." : "AI 연결이 불안정해 기본 분석으로 리포트를 만들었습니다."}
       </div>
     </section>
   );
+}
+
+function ScoreDetail({ label, value, hint }) {
+  return (
+    <div className="score-detail">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <p>{hint}</p>
+    </div>
+  );
+}
+
+function IssueItem({ issue }) {
+  return (
+    <article className={`issue-item severity-${issue.severity}`}>
+      <div className="issue-time">{issue.time}</div>
+      <div>
+        <div className="issue-title-row">
+          <h4>{issue.title}</h4>
+          <span>{severityLabel(issue.severity)}</span>
+        </div>
+        <p className="issue-evidence">{issue.evidence}</p>
+        <blockquote>{issue.spoken_excerpt}</blockquote>
+        <p className="issue-suggestion">{issue.suggestion}</p>
+      </div>
+    </article>
+  );
+}
+
+function KeywordGroup({ emptyText = "표시할 키워드가 없습니다.", items, title }) {
+  return (
+    <div className="keyword-group">
+      <strong>{title}</strong>
+      <div>
+        {items.length ? items.map((item) => <span key={item}>{item}</span>) : <em>{emptyText}</em>}
+      </div>
+    </div>
+  );
+}
+
+function severityLabel(severity) {
+  if (severity === "high") return "중요";
+  if (severity === "medium") return "주의";
+  return "참고";
 }
 
 function ResultPill({ label, value }) {

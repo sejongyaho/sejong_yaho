@@ -12,6 +12,7 @@ import {
   RefreshCcw,
   Send,
   Square,
+  SquarePlay,
   Upload,
 } from "lucide-react";
 
@@ -813,49 +814,7 @@ function SetupPage({ aiStatus, error, importScriptFile, isImporting, isStarting,
             <span className="hero-note">마이크 권한은 연습을 시작할 때만 요청합니다.</span>
           </div>
         </div>
-        <aside className="hero-dashboard" aria-label="리허설 프리뷰">
-          <div className="dashboard-topline">
-            <span>session brief</span>
-            <strong>{scriptWords || 0} words</strong>
-          </div>
-          <div className="preview-metrics">
-            <div className="preview-card raised">
-              <Clock3 size={18} />
-              <span>예상 시간</span>
-              <strong>{estimatedMinutes}<small>분</small></strong>
-            </div>
-            <div className="preview-card">
-              <BarChart3 size={18} />
-              <span>피드백</span>
-              <strong>{analysisItems.length}<small>가지</small></strong>
-            </div>
-          </div>
-          <div className="mini-chart" aria-label="리허설 분석 예시">
-            <div className="brief-line">
-              <span>pace</span>
-              <strong>5.9 syll/sec</strong>
-            </div>
-            <div className="brief-line">
-              <span>pause</span>
-              <strong>2.4 sec longest</strong>
-            </div>
-            <div className="brief-line">
-              <span>script</span>
-              <strong>{keywordEstimate ? `핵심어 ${keywordEstimate}개 후보` : "대본 입력 대기"}</strong>
-            </div>
-            <p className="brief-copy">문장 끝에서 호흡이 조금 짧습니다. 두 번째 전환부 앞에 쉼표를 하나 더 두세요.</p>
-          </div>
-          <div className="preview-message">
-            <MessageCircle size={16} />
-            <p>“속도는 안정적입니다. 결론 전에 한 문장만 더 천천히 읽어보세요.”</p>
-          </div>
-        </aside>
-      </header>
-
-      {error && <div className="notice">{error}</div>}
-
-      <section className="setup-grid" id="script">
-        <div className="script-panel setup-script">
+        <div className="script-panel setup-script hero-script" id="script">
           <div className="panel-heading">
             <h2>발표 대본</h2>
             <span>{scriptWords} words · 예상 {estimatedMinutes}분</span>
@@ -894,6 +853,59 @@ function SetupPage({ aiStatus, error, importScriptFile, isImporting, isStarting,
             />
           </div>
         </div>
+      </header>
+
+      {error && <div className="notice">{error}</div>}
+
+      <div className="reference-link-panel">
+        <div className="reference-link-copy">
+          <span>reference model</span>
+          <strong>닮고 싶은 발표를 넣어주세요</strong>
+          <p>원하는 발표 레퍼런스를 분석해 내 대본과 비교합니다.</p>
+        </div>
+        <div className="youtube-link-shell youtube-link-shell-light">
+          <SquarePlay size={16} />
+          <label>
+            <span>youtube reference</span>
+            <input type="url" placeholder="https://youtube.com/watch?v=..." aria-label="유튜브 링크" />
+          </label>
+        </div>
+      </div>
+
+      <section className="setup-grid">
+        <aside className="hero-dashboard setup-dashboard" aria-label="리허설 프리뷰">
+          <div className="dashboard-topline">
+            <span>session brief</span>
+            <strong>{scriptWords || 0} words</strong>
+          </div>
+          <div className="preview-metrics">
+            <div className="preview-card raised">
+              <Clock3 size={18} />
+              <span>예상 시간</span>
+              <strong>{estimatedMinutes}<small>분</small></strong>
+            </div>
+            <div className="preview-card">
+              <BarChart3 size={18} />
+              <span>피드백</span>
+              <strong>{analysisItems.length}<small>가지</small></strong>
+            </div>
+          </div>
+          <div className="mini-chart" aria-label="리허설 분석 예시">
+            <div className="brief-line">
+              <span>pace</span>
+              <strong>5.9 syll/sec</strong>
+            </div>
+            <div className="brief-line">
+              <span>pause</span>
+              <strong>2.4 sec longest</strong>
+            </div>
+            <div className="brief-line">
+              <span>script</span>
+              <strong>{keywordEstimate ? `핵심어 ${keywordEstimate}개 후보` : "대본 입력 대기"}</strong>
+            </div>
+            <p className="brief-copy">문장 끝에서 호흡이 조금 짧습니다. 두 번째 전환부 앞에 쉼표를 하나 더 두세요.</p>
+          </div>
+        </aside>
 
         <aside className="ready-panel" id="insight">
           <div className="service-checklist">

@@ -623,10 +623,6 @@ function App() {
   const startPresentation = async () => {
     setError("");
     setReport(null);
-    if (script.trim().length < 10) {
-      setError("대본을 조금 더 입력해 주세요.");
-      return;
-    }
 
     setIsStarting(true);
     try {
@@ -1656,7 +1652,6 @@ function visibleReportSummary(report) {
 function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWords }) {
   const aiLive = Boolean(report.used_gemini);
   const analysisMeta = report.analysis_meta || {};
-  const speechHabits = report.speech_habits || {};
   const scoreVisible = analysisMeta.score_visible !== false;
   const score = report.overall_score ?? 0;
   const quickSummary = buildQuickSummary(report);
@@ -1666,8 +1661,6 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
   const strengths = dedupeTextItems(report.strengths || [], 4);
   const priorityFeedback = dedupeTextItems(report.detailed_feedback?.priority_feedback || report.improvements || [], 5);
   const practicePlan = dedupeTextItems(report.detailed_feedback?.practice_plan || [], 5);
-  const keywordFeedback = report.keyword_feedback || {};
-  const presentationMaterial = report.presentation_material || materialFeedback || null;
 
   return (
     <section className="report-panel service-report">
@@ -1718,44 +1711,6 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         <FeedbackList title="우선 고칠 점" items={priorityFeedback} />
       </div>
 
-      {presentationMaterial ? (
-        <section className="material-analysis-card">
-          <div className="section-heading">
-            <h3>발표 자료 분석</h3>
-            <span>{presentationMaterial.overall_score ?? 0}점</span>
-          </div>
-          <div className="detail-score-grid material-grid">
-            <ScoreDetail label="예상 발표 시간" value={`${presentationMaterial.estimated_minutes ?? 0}분`} hint="대본과 자료를 함께 기준으로 계산합니다." />
-            <ScoreDetail label="시인성" value={`${presentationMaterial.clarity_score ?? 0}/100`} hint="글자 크기와 밀도를 봅니다." />
-            <ScoreDetail label="통일성" value={`${presentationMaterial.consistency_score ?? 0}/100`} hint="슬라이드 간 표현 흐름을 봅니다." />
-            <ScoreDetail label="주제 적합도" value={`${presentationMaterial.topic_fit_score ?? 0}/100`} hint="대본과 자료의 핵심 주제가 얼마나 맞는지 봅니다." />
-          </div>
-          <p className="material-summary">{presentationMaterial.summary}</p>
-          {presentationMaterial.notes?.length ? (
-            <ul className="material-notes">
-              {presentationMaterial.notes.map((note) => (
-                <li key={note}>{note}</li>
-              ))}
-            </ul>
-          ) : null}
-          {presentationMaterial.files?.length ? (
-            <div className="material-file-cards">
-              {presentationMaterial.files.map((file) => (
-                <article className="material-file-card" key={file.filename}>
-                  <strong>{file.filename}</strong>
-                  <p>{file.summary || "업로드한 발표 자료 분석을 완료했습니다."}</p>
-                  <div className="material-file-meta">
-                    <span>{String(file.kind || "file").toUpperCase()}</span>
-                    <span>{file.page_count || file.slide_count || 0}장</span>
-                    <span>{file.overall_score ?? 0}/100</span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : null}
-        </section>
-      ) : null}
-
       <section className="issue-section">
         <div className="section-heading">
           <h3>발표 타임라인 로그</h3>
@@ -1790,10 +1745,11 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
 
       <section className="report-two-column">
         <div className="keyword-card">
-          <h3>말한 내용 핵심어</h3>
-          <p>말한 내용에서 확인된 핵심어와 빠진 핵심어입니다.</p>
-          <KeywordGroup title="반영됨" items={keywordFeedback.covered_keywords || []} />
-          <KeywordGroup title="빠짐" items={keywordFeedback.missed_keywords || []} emptyText="크게 빠진 핵심어가 없습니다." />
+          <h3>말 습관 분석</h3>
+          <p>말한 내용을 바탕으로 자주 나온 말 습관을 정리했습니다.</p>
+          <KeywordGroup title="추임새" items={Object.entries(report.speech_habits?.filler_counts || {}).map(([key, value]) => `${key} ${value}회`)} emptyText="눈에 띄는 추임새가 많지 않습니다." />
+          <KeywordGroup title="반복 표현" items={(report.speech_habits?.repeated_tokens || []).map((item) => `${item.token} ${item.count}회`)} emptyText="과도한 반복 표현은 크지 않습니다." />
+          <KeywordGroup title="주의 메모" items={report.speech_habits?.notes || []} emptyText="특이한 말 습관 메모가 없습니다." />
         </div>
         <div className="practice-plan-card">
           <h3>다음 연습 계획</h3>

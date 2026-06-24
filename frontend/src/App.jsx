@@ -34,6 +34,7 @@ import {
   formatReferenceStatus,
   getSituation,
   looksLikeScriptFile,
+  reactionForAudience,
   reactionFromSituation,
   scriptOverlap,
   syllableCount,
@@ -186,6 +187,7 @@ function App() {
   const [elapsed, setElapsed] = useState(0);
   const [transcriptSegments, setTranscriptSegments] = useState([]);
   const [interimTranscript, setInterimTranscript] = useState("");
+  const [displayTranscript, setDisplayTranscript] = useState("");
   const [wordsPerMinute, setWordsPerMinute] = useState(0);
   const [syllablesPerSecond, setSyllablesPerSecond] = useState(0);
   const [articulationSyllablesPerSecond, setArticulationSyllablesPerSecond] = useState(0);
@@ -197,6 +199,7 @@ function App() {
   const [longestSilence, setLongestSilence] = useState(0);
   const [situation, setSituation] = useState("opening");
   const [reaction, setReaction] = useState("attentive");
+  const [audienceReactions, setAudienceReactions] = useState({});
   const [chat, setChat] = useState([]);
   const [report, setReport] = useState(null);
   const [scriptFeedback, setScriptFeedback] = useState(null);
@@ -224,8 +227,10 @@ function App() {
   const transcriptRef = useRef("");
   const interimRef = useRef("");
   const lastInterimRef = useRef("");
+  const displayTranscriptRef = useRef("");
   const volumeRef = useRef(0);
   const voiceActiveRef = useRef(false);
+  const lastVoiceHeardAtRef = useRef(0);
   const lastRecognizedAtRef = useRef(0);
   const lastRecognizedWordCountRef = useRef(0);
   const silenceStreakRef = useRef(0);
@@ -234,8 +239,15 @@ function App() {
   const wordHistoryRef = useRef([]);
   const thresholdRef = useRef(0.022);
   const calibrationRef = useRef({ samples: [], done: false });
-  const lastChatKeyRef = useRef("");
-  const lastChatAtRef = useRef(0);
+  const audienceReactionsRef = useRef({});
+  const lastAudienceChatAtRef = useRef({});
+  const lastGlobalAudienceChatAtRef = useRef(0);
+  const lastEncouragementAtRef = useRef(0);
+  const audienceChatPendingRef = useRef(false);
+  const stableSituationRef = useRef("opening");
+  const stableSituationChangedAtRef = useRef(0);
+  const lastRawSituationRef = useRef("opening");
+  const rawSituationSinceRef = useRef(0);
   const transcriptScrollRef = useRef(null);
   const setupRestoredRef = useRef(false);
   const activeScriptRef = useRef("");
@@ -254,10 +266,7 @@ function App() {
   });
 
   const committedTranscript = useMemo(() => transcriptSegments.join(" ").trim(), [transcriptSegments]);
-  const liveTranscript = useMemo(
-    () => `${committedTranscript} ${interimTranscript}`.replace(/\s+/g, " ").trim(),
-    [committedTranscript, interimTranscript],
-  );
+  const liveTranscript = displayTranscript || `${committedTranscript} ${interimTranscript}`.replace(/\s+/g, " ").trim();
   const overlap = useMemo(() => scriptOverlap(script, liveTranscript), [script, liveTranscript]);
   const spokenWords = useMemo(() => tokenCount(liveTranscript), [liveTranscript]);
 
@@ -342,8 +351,10 @@ function App() {
     transcriptRef.current = "";
     interimRef.current = "";
     lastInterimRef.current = "";
+    displayTranscriptRef.current = "";
     volumeRef.current = 0;
     voiceActiveRef.current = false;
+    lastVoiceHeardAtRef.current = Date.now();
     lastRecognizedAtRef.current = Date.now();
     lastRecognizedWordCountRef.current = 0;
     silenceStreakRef.current = 0;
@@ -352,8 +363,15 @@ function App() {
     wordHistoryRef.current = [];
     thresholdRef.current = 0.022;
     calibrationRef.current = { samples: [], done: false };
-    lastChatKeyRef.current = "";
-    lastChatAtRef.current = 0;
+    audienceReactionsRef.current = {};
+    lastAudienceChatAtRef.current = {};
+    lastGlobalAudienceChatAtRef.current = 0;
+    lastEncouragementAtRef.current = 0;
+    audienceChatPendingRef.current = false;
+    stableSituationRef.current = "opening";
+    stableSituationChangedAtRef.current = Date.now();
+    lastRawSituationRef.current = "opening";
+    rawSituationSinceRef.current = Date.now();
   };
 
   const refreshAiStatus = async () => {
@@ -386,27 +404,150 @@ function App() {
     }, 250);
   };
 
-  const pushChatForSituation = (nextSituation, now, force = false) => {
-    const shouldPost =
-      force ||
-      nextSituation !== lastChatKeyRef.current ||
-      now - lastChatAtRef.current > 9000 ||
-      ["longSilence", "tooFast", "unclear"].includes(nextSituation);
-
-    if (!shouldPost || now - lastChatAtRef.current < 3500) return;
-
-    const message = situationMessages[nextSituation] || situationMessages.opening;
+  const appendAudienceChat = (message, now, nextSituation) => {
     setChat((prev) => [
       ...prev.slice(-6),
       {
-        id: `${now}-${nextSituation}`,
+        id: message.id || `${now}-${nextSituation}`,
         name: message.name,
         text: message.text,
         reaction: message.reaction,
       },
     ]);
-    lastChatKeyRef.current = nextSituation;
-    lastChatAtRef.current = now;
+  };
+
+  const localAudienceMessage = (nextSituation, now, person = null, nextReaction = "") => {
+    const message = situationMessages[nextSituation] || situationMessages.opening;
+    return {
+      id: `${now}-${nextSituation}-${person?.name || "local"}`,
+      name: person?.name || message.name,
+      text: message.text,
+      reaction: nextReaction || message.reaction,
+    };
+  };
+
+  const pushChatForAudienceChange = (person, nextSituation, now, snapshot = {}, nextReaction = "") => {
+    const lastPersonChatAt = lastAudienceChatAtRef.current[person.name] || 0;
+    if (audienceChatPendingRef.current) return;
+    if (now - lastGlobalAudienceChatAtRef.current < 3200) return;
+    if (now - lastPersonChatAt < 7500) return;
+
+    lastAudienceChatAtRef.current = {
+      ...lastAudienceChatAtRef.current,
+      [person.name]: now,
+    };
+    lastGlobalAudienceChatAtRef.current = now;
+
+    const currentSessionId = sessionIdRef.current;
+    if (!currentSessionId) {
+      appendAudienceChat(localAudienceMessage(nextSituation, now, person, nextReaction), now, nextSituation);
+      return;
+    }
+
+    audienceChatPendingRef.current = true;
+    fetch(`${API_BASE_URL}/api/session/${currentSessionId}/audience/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        situation: nextSituation,
+        elapsed_seconds: snapshot.elapsed ?? 0,
+        transcript: snapshot.transcript ?? "",
+        current_excerpt: snapshot.currentExcerpt ?? "",
+        words_per_minute: snapshot.wordsPerMinute ?? 0,
+        syllables_per_second: snapshot.syllablesPerSecond ?? 0,
+        pause_ratio: snapshot.pauseRatio ?? 0,
+        silence_streak: snapshot.silenceStreak ?? 0,
+        overlap: snapshot.overlap ?? 0,
+        voice_active: snapshot.voiceActive ?? false,
+        seconds_since_recognized: snapshot.secondsSinceRecognized ?? 0,
+        words_spoken: snapshot.wordsSpoken ?? 0,
+        force_positive: snapshot.forcePositive ?? false,
+        reaction: nextReaction || snapshot.reaction || reactionFromSituation(nextSituation),
+        audience_name: person.name,
+        audience_role: person.role || "",
+        force: false,
+      }),
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("audience chat failed");
+        return response.json();
+      })
+      .then((message) => appendAudienceChat(message, now, nextSituation))
+      .catch(() => appendAudienceChat(localAudienceMessage(nextSituation, now, person, nextReaction), now, nextSituation))
+      .finally(() => {
+        audienceChatPendingRef.current = false;
+      });
+  };
+
+  const pushChatsForAudienceChanges = (nextSituation, now, snapshot, nextAudienceReactions) => {
+    const previous = audienceReactionsRef.current;
+    const changedPeople = audience.filter((person) => {
+      const previousReaction = previous[person.name];
+      const nextReaction = nextAudienceReactions[person.name];
+      return previousReaction && nextReaction && previousReaction !== nextReaction;
+    });
+
+    audienceReactionsRef.current = nextAudienceReactions;
+    if (!changedPeople.length) return;
+
+    const priority = ["tooFast", "confused", "sleepy", "excited", "tooSlow", "attentive"];
+    const person = changedPeople.sort(
+      (a, b) => priority.indexOf(nextAudienceReactions[a.name]) - priority.indexOf(nextAudienceReactions[b.name]),
+    )[0];
+    pushChatForAudienceChange(person, nextSituation, now, snapshot, nextAudienceReactions[person.name]);
+  };
+
+  const pushOccasionalEncouragement = (nextSituation, now, snapshot, nextAudienceReactions) => {
+    const isSteadyNormal = ["opening", "focused", "impressed"].includes(nextSituation);
+    const hasEnoughSpeech = snapshot.wordsSpoken >= 5 && snapshot.voiceActive;
+    const paceLooksFine = snapshot.syllablesPerSecond >= 3.8 && snapshot.syllablesPerSecond <= 7.4;
+    const noAudienceConcern = Object.values(nextAudienceReactions).every((item) => item === "attentive" || item === "excited");
+    if (!isSteadyNormal || !hasEnoughSpeech || !paceLooksFine || !noAudienceConcern) return;
+    if (audienceChatPendingRef.current) return;
+    if (now - lastEncouragementAtRef.current < 10000) return;
+    if (now - lastGlobalAudienceChatAtRef.current < 3500) return;
+
+    const candidates = audience.filter((person) => nextAudienceReactions[person.name] === "attentive");
+    const person = candidates[Math.floor(Math.random() * candidates.length)] || audience[0];
+    lastEncouragementAtRef.current = now;
+    pushChatForAudienceChange(person, nextSituation, now, { ...snapshot, forcePositive: true }, nextAudienceReactions[person.name]);
+  };
+
+  const stabilizeSituation = (candidate, now) => {
+    const current = stableSituationRef.current;
+    if (candidate === current) {
+      lastRawSituationRef.current = candidate;
+      rawSituationSinceRef.current = now;
+      return current;
+    }
+
+    if (candidate !== lastRawSituationRef.current) {
+      lastRawSituationRef.current = candidate;
+      rawSituationSinceRef.current = now;
+      return current;
+    }
+
+    const minimumCurrentDwellMs = current === "opening" ? 5500 : 7500;
+    if (now - stableSituationChangedAtRef.current < minimumCurrentDwellMs) return current;
+
+    const requiredMsBySituation = {
+      longSilence: 4200,
+      unclear: 4300,
+      tooFast: 5200,
+      tooSlow: 6200,
+      offScript: 6500,
+      impressed: 6000,
+      focused: 5600,
+      opening: 5000,
+    };
+    const requiredMs = requiredMsBySituation[candidate] || 5600;
+    if (now - rawSituationSinceRef.current >= requiredMs) {
+      stableSituationRef.current = candidate;
+      stableSituationChangedAtRef.current = now;
+      return candidate;
+    }
+
+    return current;
   };
 
   const setupSpeechRecognition = () => {
@@ -441,6 +582,8 @@ function App() {
       if (finalText.trim()) {
         const cleanedFinal = finalText.replace(/\s+/g, " ").trim();
         transcriptRef.current = `${transcriptRef.current} ${cleanedFinal}`.replace(/\s+/g, " ").trim();
+        displayTranscriptRef.current = transcriptRef.current;
+        setDisplayTranscript(displayTranscriptRef.current);
         setTranscriptSegments((prev) => [...prev, cleanedFinal]);
         interimRef.current = "";
         lastInterimRef.current = "";
@@ -451,6 +594,7 @@ function App() {
         const cleanedInterim = interimText.replace(/\s+/g, " ").trim();
         interimRef.current = cleanedInterim;
         lastInterimRef.current = cleanedInterim;
+        setDisplayTranscript(`${displayTranscriptRef.current} ${cleanedInterim}`.replace(/\s+/g, " ").trim());
         setInterimTranscript(cleanedInterim);
       }
 
@@ -528,15 +672,22 @@ function App() {
       if (!calibrationRef.current.done) {
         calibrationRef.current.samples.push(rms);
         if (calibrationRef.current.samples.length >= 35) {
+          const sortedSamples = [...calibrationRef.current.samples].sort((a, b) => a - b);
+          const quietSample = sortedSamples[Math.floor(sortedSamples.length * 0.35)] || 0;
           const avgNoise =
             calibrationRef.current.samples.reduce((total, sample) => total + sample, 0) /
             calibrationRef.current.samples.length;
-          thresholdRef.current = clamp(avgNoise * 2.8, 0.016, 0.055);
+          thresholdRef.current = clamp(Math.min(avgNoise * 2.2, quietSample * 3.2), 0.009, 0.04);
           calibrationRef.current.done = true;
         }
       }
 
-      const isVoice = rms > thresholdRef.current;
+      const now = Date.now();
+      const voiceFloor = Math.max(0.0075, thresholdRef.current * 0.68);
+      if (rms > voiceFloor) {
+        lastVoiceHeardAtRef.current = now;
+      }
+      const isVoice = now - lastVoiceHeardAtRef.current < 1200;
       voiceActiveRef.current = isVoice;
       setVoiceActive(isVoice);
       animationRef.current = requestAnimationFrame(tick);
@@ -566,7 +717,7 @@ function App() {
       const nextSyllablesPerSecond = nextElapsed > 0 ? currentSyllables / nextElapsed : 0;
 
       const secondsSinceRecognized = (now - lastRecognizedAtRef.current) / 1000;
-      const isRecognizedSilence = nextElapsed > 3 && secondsSinceRecognized > 2.4;
+      const isRecognizedSilence = nextElapsed > 3 && !voiceActiveRef.current && secondsSinceRecognized > 2.4;
 
       if (isRecognizedSilence) {
         silenceStreakRef.current += 1;
@@ -579,16 +730,37 @@ function App() {
       const articulationSeconds = Math.max(1, nextElapsed - silenceSecondsRef.current);
       const nextArticulationRate = currentSyllables / articulationSeconds;
       const nextPauseRatio = nextElapsed > 0 ? silenceSecondsRef.current / nextElapsed : 0;
+      const nextOverlap = scriptOverlap(script, currentTranscript);
 
-      const nextSituation = getSituation({
+      const rawSituation = getSituation({
         elapsed: nextElapsed,
         wordsPerMinute: Math.round(rollingWpm),
         syllablesPerSecond: nextSyllablesPerSecond,
         silenceStreak: silenceStreakRef.current,
         voiceActive: voiceActiveRef.current,
         secondsSinceRecognized,
-        overlap: scriptOverlap(activeScriptRef.current || script, currentTranscript),
+        overlap: nextOverlap,
+        wordsSpoken: currentWords,
       });
+      const nextSituation = stabilizeSituation(rawSituation, now);
+      const nextReaction = reactionFromSituation(nextSituation);
+      const metricsSnapshot = {
+        elapsed: nextElapsed,
+        transcript: currentTranscript,
+        currentExcerpt: currentTranscript.slice(-260),
+        wordsPerMinute: Math.round(rollingWpm),
+        syllablesPerSecond: Number(nextSyllablesPerSecond.toFixed(2)),
+        pauseRatio: Number(nextPauseRatio.toFixed(3)),
+        silenceStreak: silenceStreakRef.current,
+        voiceActive: voiceActiveRef.current,
+        secondsSinceRecognized,
+        overlap: nextOverlap,
+        wordsSpoken: currentWords,
+        reaction: nextReaction,
+      };
+      const nextAudienceReactions = Object.fromEntries(
+        audience.map((person) => [person.name, reactionForAudience(person, nextSituation, metricsSnapshot)]),
+      );
 
       setElapsed(nextElapsed);
       setWordsPerMinute(Math.round(rollingWpm));
@@ -599,7 +771,9 @@ function App() {
       setSilenceSeconds(silenceSecondsRef.current);
       setLongestSilence(longestSilenceRef.current);
       setSituation(nextSituation);
-      pushChatForSituation(nextSituation, now, nextElapsed === 1);
+      setAudienceReactions(nextAudienceReactions);
+      pushChatsForAudienceChanges(nextSituation, now, metricsSnapshot, nextAudienceReactions);
+      pushOccasionalEncouragement(nextSituation, now, metricsSnapshot, nextAudienceReactions);
     }, 1000);
   };
 
@@ -648,6 +822,7 @@ function App() {
     setReport(null);
     setTranscriptSegments([]);
     setInterimTranscript("");
+    setDisplayTranscript("");
     setElapsed(0);
     setWordsPerMinute(0);
     setSyllablesPerSecond(0);
@@ -659,6 +834,7 @@ function App() {
     setChat([]);
     setSituation("opening");
     setReaction("attentive");
+    setAudienceReactions({});
     setRecognitionStatus("마이크 준비 중");
     resetRealtimeRefs();
 
@@ -875,6 +1051,7 @@ function App() {
     setChat([]);
     setTranscriptSegments([]);
     setInterimTranscript("");
+    setDisplayTranscript("");
     setElapsed(0);
     setWordsPerMinute(0);
     setSyllablesPerSecond(0);
@@ -885,6 +1062,7 @@ function App() {
     setLongestSilence(0);
     setSituation("opening");
     setReaction("attentive");
+    setAudienceReactions({});
     setRecognitionStatus("대기 중");
     setError("");
     setMaterialFiles([]);
@@ -1031,6 +1209,17 @@ function App() {
             transcriptScrollRef={transcriptScrollRef}
             voiceActive={voiceActive}
             volume={volume}
+            audienceReactions={audienceReactions}
+            audienceMetrics={{
+              elapsed,
+              wordsPerMinute,
+              syllablesPerSecond,
+              silenceStreak,
+              voiceActive,
+              secondsSinceRecognized: Math.max(0, (Date.now() - lastRecognizedAtRef.current) / 1000),
+              overlap,
+              wordsSpoken: spokenWords,
+            }}
             paceLabel={userPaceLabel(syllablesPerSecond)}
             silenceLabel={userSilenceLabel(pauseRatio, silenceStreak)}
             deliveryLabel={userDeliveryLabel(overlap)}
@@ -1915,6 +2104,10 @@ function cleanVisibleText(value) {
     .trim();
 }
 
+function normalizeTranscriptText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
 function feedbackTopicKey(item) {
   const text = cleanVisibleText(item).toLowerCase();
   const found = Object.entries(FEEDBACK_TOPICS).find(([, keywords]) => keywords.some((keyword) => text.includes(keyword.toLowerCase())));
@@ -1955,6 +2148,16 @@ function dedupeIssues(issues = [], limit = Infinity) {
   return result;
 }
 
+function cleanIssues(issues = [], limit = Infinity) {
+  return issues.slice(0, limit).map((issue) => ({
+    ...issue,
+    title: cleanVisibleText(issue.title),
+    evidence: cleanVisibleText(issue.evidence),
+    spoken_excerpt: cleanVisibleText(issue.spoken_excerpt),
+    suggestion: cleanVisibleText(issue.suggestion),
+  }));
+}
+
 function visibleReportSummary(report) {
   const summary = cleanVisibleText(report.summary);
   if (!summary || HIDDEN_REPORT_MARKERS.some((marker) => summary.includes(marker))) {
@@ -1969,17 +2172,19 @@ function visibleReportSummary(report) {
 function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWords }) {
   const aiLive = Boolean(report.used_gemini);
   const analysisMeta = report.analysis_meta || {};
+  const analysisBasis = report.analysis_basis || {};
   const scoreVisible = analysisMeta.score_visible !== false;
   const score = report.overall_score ?? 0;
   const quickSummary = buildQuickSummary(report);
   const reportSummary = visibleReportSummary(report);
-  const issueLog = dedupeIssues(report.issue_log || [], 6);
-  const timelineLog = report.timeline_log || [];
+  const issueLog = dedupeIssues(report.issue_log || [], 12);
+  const timelineLog = cleanIssues(report.timeline_log || [], 20);
   const strengths = dedupeTextItems(report.strengths || [], 4);
   const priorityFeedback = dedupeTextItems(report.detailed_feedback?.priority_feedback || report.improvements || [], 5);
   const practicePlan = dedupeTextItems(report.detailed_feedback?.practice_plan || [], 5);
   const presentationMaterial = report.presentation_material || materialFeedback || null;
   const referenceSpeakerComparison = report.reference_speaker_comparison;
+  const fullTranscript = normalizeTranscriptText(report.transcript_full);
 
   return (
     <section className="report-panel service-report">
@@ -2007,6 +2212,7 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         <ScoreDetail label="최장 침묵" value={`${report.silence?.longest_seconds ?? 0}초`} hint="5초 이상이면 위험" />
         <ScoreDetail label="휴지 비율" value={`${report.silence?.pause_ratio_percent ?? 0}%`} hint="권장 약 15%" />
         <ScoreDetail label="말한 단어 수" value={`${analysisMeta.spoken_words ?? report.delivery_match?.spoken_words ?? 0}개`} hint="말한 내용 기준" />
+        <ScoreDetail label="인식 구간 수" value={`${analysisMeta.speech_samples ?? 0}개`} hint="말이 실제로 잡힌 구간" />
       </div>
 
       {presentationMaterial ? (
@@ -2150,6 +2356,33 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         ) : (
           <p className="issue-empty">눈에 띄는 경고 구간은 따로 잡히지 않았습니다.</p>
         )}
+      </section>
+
+      <section className="report-two-column">
+        <div className="keyword-card">
+          <h3>분석 근거</h3>
+          <p>이번 리포트가 실제로 참고한 인식 데이터입니다.</p>
+          <KeywordGroup title="분석 단계" items={[analysisMeta.summary_label || "정식 분석"]} emptyText="분석 단계 정보가 없습니다." />
+          <KeywordGroup
+            title="분석 소스"
+            items={[aiLive ? "AI + 수집 메트릭 기반" : "수집 메트릭 기반"]}
+            emptyText="분석 소스 정보가 없습니다."
+          />
+          <KeywordGroup
+            title="수집량"
+            items={[
+              `인식 단어 ${analysisBasis.spoken_words ?? analysisMeta.spoken_words ?? 0}개`,
+              `인식 구간 ${analysisBasis.speech_samples ?? analysisMeta.speech_samples ?? 0}개`,
+              `타임라인 ${analysisBasis.timeline_count ?? timelineLog.length ?? 0}개`,
+              `문제 구간 ${analysisBasis.issue_count ?? issueLog.length ?? 0}개`,
+            ]}
+            emptyText="수집 정보가 없습니다."
+          />
+        </div>
+        <div className="practice-plan-card">
+          <h3>STT 전문</h3>
+          <p>{fullTranscript || "아직 표시할 STT 전문이 없습니다."}</p>
+        </div>
       </section>
 
       <section className="report-two-column">

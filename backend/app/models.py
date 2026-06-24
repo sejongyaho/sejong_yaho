@@ -31,6 +31,26 @@ class FinishSessionRequest(BaseModel):
     transcript: str = ""
 
 
+class AudienceChatRequest(BaseModel):
+    situation: str = "opening"
+    elapsed_seconds: float = Field(0, ge=0)
+    transcript: str = ""
+    current_excerpt: str = ""
+    words_per_minute: float = Field(0, ge=0)
+    syllables_per_second: float = Field(0, ge=0)
+    pause_ratio: float = Field(0, ge=0)
+    silence_streak: float = Field(0, ge=0)
+    overlap: float = Field(0, ge=0)
+    voice_active: bool = False
+    seconds_since_recognized: float = Field(0, ge=0)
+    words_spoken: int = Field(0, ge=0)
+    force_positive: bool = False
+    reaction: str = "attentive"
+    audience_name: str | None = None
+    audience_role: str | None = None
+    force: bool = False
+
+
 class ImportedScriptResponse(BaseModel):
     filename: str
     text: str

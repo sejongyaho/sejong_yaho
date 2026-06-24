@@ -1,6 +1,26 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Loader2, Send, Square } from "lucide-react";
 import { reactionCopy, situationMessages } from "../data/audience";
-import { formatTime, softenReaction } from "../utils/presentation";
+import { formatTime, reactionForAudience } from "../utils/presentation";
+import male1AdmireVideo from "../data/남자1-감탄.mp4";
+import male1QuestionVideo from "../data/남자1-의문.mp4";
+import male1WakeVideo from "../data/남자1-졸-평.mp4";
+import male1FocusVideo from "../data/남자1-집중.mp4";
+import male1SleepVideo from "../data/남자1-평-졸.mp4";
+import male1IdleVideo from "../data/남자1-평시.mp4";
+
+const videoAudienceAssets = {
+  male1: {
+    idle: male1IdleVideo,
+    sleepIn: male1SleepVideo,
+    wake: male1WakeVideo,
+    admire: male1AdmireVideo,
+    focus: male1FocusVideo,
+    question: male1QuestionVideo,
+  },
+};
+
+const VIDEO_ACTION_MIN_INTERVAL_MS = 3800;
 
 function visualMood(reaction) {
   if (reaction === "excited") return "focused";
@@ -166,6 +186,163 @@ function Outfit({ person, id }) {
   );
 }
 
+function videoActionForReaction(reaction) {
+  if (reaction === "excited") return "admire";
+  if (reaction === "attentive") return "focus";
+  if (reaction === "confused" || reaction === "tooFast") return "question";
+  return null;
+}
+
+function isFiniteAction(action) {
+  return action && !["sleepIn", "asleep", "wake"].includes(action.kind);
+}
+
+function VideoAudienceAvatar({ person, reaction, mood, volume }) {
+  const assets = videoAudienceAssets[person.videoKey];
+  const idleVideoRef = useRef(null);
+  const actionVideoRef = useRef(null);
+  const previousMoodRef = useRef(mood);
+  const previousReactionRef = useRef(reaction);
+  const lastActionAtRef = useRef(0);
+  const pendingActionRef = useRef(null);
+  const [action, setAction] = useState(null);
+  const [actionReady, setActionReady] = useState(false);
+
+  const isSleepingMood = mood === "bored";
+
+  useEffect(() => {
+    Object.values(assets).forEach((source) => {
+      const video = document.createElement("video");
+      video.preload = "auto";
+      video.muted = true;
+      video.playsInline = true;
+      video.src = source;
+      video.load();
+    });
+  }, [assets]);
+
+  useEffect(() => {
+    const idleVideo = idleVideoRef.current;
+    if (!idleVideo) return;
+    const playPromise = idleVideo.play();
+    playPromise?.catch?.(() => {});
+  }, []);
+
+  useEffect(() => {
+    const now = Date.now();
+    const previousMood = previousMoodRef.current;
+    const previousReaction = previousReactionRef.current;
+    previousMoodRef.current = mood;
+    previousReactionRef.current = reaction;
+
+    if (isSleepingMood) {
+      if (isFiniteAction(action)) {
+        pendingActionRef.current = { kind: "sleepIn", source: assets.sleepIn };
+        return;
+      }
+      if (action?.kind !== "sleepIn" && action?.kind !== "asleep") {
+        setActionReady(false);
+        setAction({ kind: "sleepIn", source: assets.sleepIn });
+        lastActionAtRef.current = now;
+      }
+      return;
+    }
+
+    if (previousMood === "bored") {
+      if (isFiniteAction(action)) {
+        pendingActionRef.current = { kind: "wake", source: assets.wake };
+        return;
+      }
+      setActionReady(false);
+      setAction({ kind: "wake", source: assets.wake });
+      lastActionAtRef.current = now;
+      return;
+    }
+
+    const nextAction = videoActionForReaction(reaction);
+    if (
+      nextAction &&
+      reaction !== previousReaction &&
+      action?.kind !== nextAction &&
+      now - lastActionAtRef.current >= VIDEO_ACTION_MIN_INTERVAL_MS
+    ) {
+      if (action) {
+        pendingActionRef.current = { kind: nextAction, source: assets[nextAction] };
+        return;
+      }
+      setActionReady(false);
+      setAction({ kind: nextAction, source: assets[nextAction] });
+      lastActionAtRef.current = now;
+      return;
+    }
+
+    if (!nextAction && action?.kind && now - lastActionAtRef.current >= VIDEO_ACTION_MIN_INTERVAL_MS) {
+      setAction(null);
+      setActionReady(false);
+    }
+  }, [action, assets, isSleepingMood, mood, reaction]);
+
+  useEffect(() => {
+    const actionVideo = actionVideoRef.current;
+    if (!actionVideo || !action || action.kind === "asleep") return;
+    actionVideo.currentTime = 0;
+    const playPromise = actionVideo.play();
+    playPromise?.catch?.(() => {});
+  }, [action?.source]);
+
+  const handleEnded = () => {
+    if (action?.kind === "sleepIn") {
+      setAction((current) => (current ? { ...current, kind: "asleep" } : current));
+      return;
+    }
+    const nextAction = pendingActionRef.current;
+    pendingActionRef.current = null;
+    if (nextAction) {
+      setActionReady(false);
+      setAction(nextAction);
+      lastActionAtRef.current = Date.now();
+      return;
+    }
+    setAction(null);
+    setActionReady(false);
+  };
+
+  const actionClassName = useMemo(
+    () => `audience-video audience-video-action ${actionReady ? "ready" : ""} ${action?.kind === "asleep" ? "asleep" : ""}`,
+    [action, actionReady],
+  );
+
+  return (
+    <div className="audience-video-shell" style={{ "--audio-level": Math.min(volume * 30, 1.6) }}>
+      <video
+        ref={idleVideoRef}
+        className="audience-video audience-video-idle"
+        src={assets.idle}
+        muted
+        playsInline
+        autoPlay
+        loop
+        preload="auto"
+        aria-label={`${person.name} ${reactionCopy[reaction] || "반응"}`}
+      />
+      {action ? (
+        <video
+          ref={actionVideoRef}
+          className={actionClassName}
+          src={action.source}
+          muted
+          playsInline
+          autoPlay
+          preload="auto"
+          aria-hidden="true"
+          onCanPlay={() => setActionReady(true)}
+          onEnded={handleEnded}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function AudienceAvatar({ person, mood, index }) {
   const id = `avatar${index}`;
   return (
@@ -224,10 +401,14 @@ function AudienceTile({ person, reaction, active, volume, index }) {
   const mood = visualMood(reaction);
   return (
     <article className={`audience-tile mood-${mood} ${active ? "active" : ""}`} data-reaction={mood}>
-      <div className="avatarbox" style={{ "--bob": `${Math.min(volume * 30, 1.6)}px` }}>
-        <AudienceAvatar person={person} mood={mood} index={index} />
-        <span className="floor-shadow" />
-      </div>
+      {person.videoKey ? (
+        <VideoAudienceAvatar person={person} reaction={reaction} mood={mood} volume={volume} />
+      ) : (
+        <div className="avatarbox" style={{ "--bob": `${Math.min(volume * 30, 1.6)}px` }}>
+          <AudienceAvatar person={person} mood={mood} index={index} />
+          <span className="floor-shadow" />
+        </div>
+      )}
       <div className="audience-info">
         <div>
           <strong>{person.name}</strong>
@@ -266,6 +447,8 @@ export default function PracticePage({
   transcriptScrollRef,
   voiceActive,
   volume,
+  audienceReactions,
+  audienceMetrics,
   deliveryLabel,
 }) {
   const currentMessage = situationMessages[situation] || situationMessages.opening;
@@ -305,7 +488,7 @@ export default function PracticePage({
                 key={person.name}
                 index={index}
                 person={person}
-                reaction={index === 0 ? reaction : softenReaction(reaction, index)}
+                reaction={audienceReactions?.[person.name] || reactionForAudience(person, situation, audienceMetrics)}
                 active
                 volume={volume}
               />

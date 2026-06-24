@@ -34,6 +34,10 @@ function nextPendingSuggestion(suggestions, currentId) {
   return pending[currentIndex + 1]?.id || pending[0].id;
 }
 
+function cleanReferenceNote(value) {
+  return String(value || "").replace(/하드코딩된\s*/g, "").trim();
+}
+
 const referenceContextSuggestions = {
   ted: [
     {
@@ -552,14 +556,22 @@ function ReferenceSetupSection({
               {isLoadingReference ? "분석 중" : "레퍼런스 분석하기"}
             </button>
           </div>
-          {showCustomReferenceResult ? (
+          {isLoadingReference ? (
+            <div className="custom-reference-loading">
+              <Loader2 className="spin" size={24} />
+              <div>
+                <strong>레퍼런스 발표를 분석하고 있어요</strong>
+                <p>말하기 속도, 쉬는 타이밍, 강조 방식과 발표 구조를 정리하는 중입니다.</p>
+              </div>
+            </div>
+          ) : showCustomReferenceResult ? (
             <div className="custom-reference-result">
               <div className="reference-card">
                 {referenceVideo.thumbnail_url ? <img src={referenceVideo.thumbnail_url} alt="" /> : <SquarePlay size={38} />}
                 <div>
                   <strong>{referenceVideo.title || "직접 업로드한 레퍼런스"}</strong>
                   <span>{referenceVideo.author_name || "커스텀 레퍼런스"}</span>
-                  <span>{referenceVideo.status_label || referenceVideo.analysis_note || "레퍼런스 프로파일 생성 완료"}</span>
+                  <span>{cleanReferenceNote(referenceVideo.status_label || referenceVideo.analysis_note) || "레퍼런스 프로파일 생성 완료"}</span>
                 </div>
               </div>
               <ReferenceQuickAnalysis
@@ -634,7 +646,7 @@ function profileFromReferenceVideo(referenceVideo) {
   return {
     id: "custom",
     name: title,
-    description: referenceVideo.analysis_note || "사용자가 등록한 발표를 기준으로 분석",
+    description: cleanReferenceNote(referenceVideo.analysis_note) || "사용자가 등록한 발표를 기준으로 분석",
     speed: rawProfile.words_per_minute ? `${rawProfile.words_per_minute} WPM` : targets.speech_rate || "분석 기준 생성 완료",
     pause: rawProfile.pause_timing_summary || targets.pause_timing || "핵심 문장 전후의 쉼을 비교",
     emphasis: rawProfile.emphasis_summary || targets.emphasis || "핵심 키워드와 전환 문장에서 강조",

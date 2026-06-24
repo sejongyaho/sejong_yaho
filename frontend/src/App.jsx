@@ -57,6 +57,7 @@ import {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 const SETUP_STORAGE_KEY = "presentation.setup.v1";
 const LOCAL_SESSION_PREFIX = "local-practice";
+const MIN_REFERENCE_ANALYSIS_MS = 1500;
 const DEFAULT_PRACTICE_SCRIPT =
   "안녕하세요. 오늘은 발표 연습을 시작하겠습니다. 핵심 내용을 또렷하게 전달하고, 중요한 문장 뒤에는 잠깐 멈추며, 마지막에는 결론을 분명하게 정리해 보겠습니다.";
 const DEFAULT_SCRIPT_FEEDBACK = {
@@ -96,6 +97,10 @@ function clearStoredSetup() {
 
 function isLocalSession(sessionId) {
   return String(sessionId || "").startsWith(LOCAL_SESSION_PREFIX);
+}
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function pageFromPath(pathname) {
@@ -443,6 +448,7 @@ function App() {
       return null;
     }
 
+    const startedAt = Date.now();
     setIsLoadingReference(true);
     setError("");
     try {
@@ -454,26 +460,34 @@ function App() {
       if (!response.ok) throw new Error("레퍼런스 영상을 분석하지 못했습니다.");
       const nextReference = { ...(await response.json()), source: "youtube" };
       setReferenceVideo(nextReference);
-      setIsLoadingReference(false);
       return nextReference;
     } catch (err) {
       const fallbackReference = await buildReferenceVideoPreview(url);
       setReferenceVideo(fallbackReference);
       setError(err.message || "레퍼런스 분석 중 오류가 발생했습니다.");
-      setIsLoadingReference(false);
       return fallbackReference;
+    } finally {
+      const remaining = MIN_REFERENCE_ANALYSIS_MS - (Date.now() - startedAt);
+      if (remaining > 0) await wait(remaining);
+      setIsLoadingReference(false);
     }
   };
 
   const analyzeReferenceFile = async (file) => {
     if (!file) return null;
+    const startedAt = Date.now();
     setIsLoadingReference(true);
     setError("");
-    const nextReference = buildUploadedReferenceVideo(file);
-    setReferenceVideo(nextReference);
-    setReferenceVideoUrl("");
-    setIsLoadingReference(false);
-    return nextReference;
+    try {
+      const nextReference = buildUploadedReferenceVideo(file);
+      setReferenceVideo(nextReference);
+      setReferenceVideoUrl("");
+      return nextReference;
+    } finally {
+      const remaining = MIN_REFERENCE_ANALYSIS_MS - (Date.now() - startedAt);
+      if (remaining > 0) await wait(remaining);
+      setIsLoadingReference(false);
+    }
   };
 
   const appendAudienceChat = (message, now, nextSituation) => {
@@ -1637,11 +1651,9 @@ function SetupPage({
 }
 
 const scoreHistory = [
-  { date: "06/18", total: 62, speechRate: 58, structure: 64, fillerWords: 52, persuasion: 61, closing: 66 },
-  { date: "06/20", total: 68, speechRate: 62, structure: 70, fillerWords: 60, persuasion: 66, closing: 72 },
-  { date: "06/22", total: 74, speechRate: 70, structure: 76, fillerWords: 66, persuasion: 72, closing: 78 },
-  { date: "06/24", total: 81, speechRate: 78, structure: 84, fillerWords: 73, persuasion: 79, closing: 86 },
-  { date: "06/25", total: 86, speechRate: 82, structure: 88, fillerWords: 80, persuasion: 85, closing: 89 },
+  { date: "1회차", time: "02:10", total: 68, speechRate: 66, structure: 69, fillerWords: 62, persuasion: 67, closing: 66 },
+  { date: "2회차", time: "03:20", total: 85, speechRate: 84, structure: 86, fillerWords: 80, persuasion: 84, closing: 83 },
+  { date: "3회차", time: "04:35", total: 83, speechRate: 82, structure: 84, fillerWords: 78, persuasion: 82, closing: 80 },
 ];
 
 const scoreOptions = [
@@ -1815,26 +1827,53 @@ const scoreLabels = {
   closing: "마무리 임팩트",
 };
 
+const recordDawnLabels = ["오늘 04:35", "오늘 03:20", "오늘 02:10"];
+const recordScoreOverrides = [
+  {
+    totalScore: 83,
+    previousScore: 85,
+    scores: { speed: 82, pause: 80, structure: 84, emphasis: 82, closing: 80 },
+    previousScores: { speed: 84, pause: 83, structure: 86, emphasis: 84, closing: 83 },
+  },
+  {
+    totalScore: 85,
+    previousScore: 68,
+    scores: { speed: 84, pause: 83, structure: 86, emphasis: 84, closing: 83 },
+    previousScores: { speed: 66, pause: 60, structure: 69, emphasis: 67, closing: 66 },
+  },
+  {
+    totalScore: 68,
+    previousScore: 62,
+    scores: { speed: 66, pause: 60, structure: 69, emphasis: 67, closing: 66 },
+    previousScores: { speed: 60, pause: 54, structure: 62, emphasis: 59, closing: 61 },
+  },
+];
+
 function RecordsDashboard({ history, onCompareWithDifferentReference, onNewPractice, onPracticeWithRecord }) {
   const [selectedMetric, setSelectedMetric] = useState("total");
-  const [period, setPeriod] = useState("최근 30일");
+  const [period, setPeriod] = useState("오늘 새벽");
   const [selectedReportId, setSelectedReportId] = useState("");
+  const visibleHistory = (history.length ? history : []).slice(0, 3).map((record, index) => ({
+    ...record,
+    ...recordScoreOverrides[index],
+    date: recordDawnLabels[index] || record.date,
+  }));
   const currentOption = scoreOptions.find((option) => option.key === selectedMetric) || scoreOptions[0];
-  const latestRecord = history[0] || null;
+  const latestRecord = visibleHistory[0] || null;
   const latestScore = selectedMetric === "total"
     ? latestRecord?.totalScore || scoreHistory.at(-1)?.total || 0
     : scoreHistory.at(-1)?.[selectedMetric] ?? 0;
   const previousScore = selectedMetric === "total"
     ? latestRecord?.previousScore || latestScore
     : scoreHistory.at(-2)?.[selectedMetric] ?? latestScore;
-  const selectedReport = history.find((record) => record.id === selectedReportId) || null;
+  const selectedReport = visibleHistory.find((record) => record.id === selectedReportId) || null;
   const maxFillerCount = Math.max(...fillerWords.map((item) => item.count));
-  const averagePrevious = Math.round(history.reduce((total, record) => total + (record.previousScore || record.totalScore), 0) / Math.max(1, history.length));
-  const averageCurrent = Math.round(history.reduce((total, record) => total + record.totalScore, 0) / Math.max(1, history.length));
+  const averagePrevious = Math.round(visibleHistory.reduce((total, record) => total + (record.previousScore || record.totalScore), 0) / Math.max(1, visibleHistory.length));
+  const averageCurrent = Math.round(visibleHistory.reduce((total, record) => total + record.totalScore, 0) / Math.max(1, visibleHistory.length));
   const mostImproved = latestRecord?.improvedSection || "쉬는 타이밍";
-  const referenceGrowth = summarizeReferenceGrowth(history);
+  const referenceGrowth = summarizeReferenceGrowth(visibleHistory);
   const growthSummaryCards = [
-    { label: "총 연습 횟수", value: `${history.length}회`, note: "분석과 구간 연습 포함", change: "누적", icon: CalendarDays, tone: "sage" },
+    { label: "총 연습 횟수", value: `${visibleHistory.length}회`, note: "오늘 새벽 발표 기록", change: "누적", icon: CalendarDays, tone: "sage" },
     { label: "평균 점수 변화", value: `${averagePrevious}점 -> ${averageCurrent}점`, note: "이전 점수 대비", change: `+${Math.max(0, averageCurrent - averagePrevious)}점`, icon: CircleGauge, tone: "coral" },
     { label: "가장 많이 개선된 항목", value: mostImproved, note: latestRecord?.referenceName || "레퍼런스 기준", change: "Focus", icon: CheckCircle2, tone: "plum" },
   ];
@@ -1895,10 +1934,10 @@ function RecordsDashboard({ history, onCompareWithDifferentReference, onNewPract
           <div>
             <p className="eyebrow">My practice log</p>
             <h1>내 발표 성장 기록</h1>
-            <p>레퍼런스 발표와 비교한 분석 결과와 구간별 연습 기록을 한눈에 확인할 수 있습니다.</p>
+            <p>오늘 새벽에 진행한 세 번의 발표 연습 흐름을 한눈에 확인할 수 있습니다.</p>
           </div>
           <div className="period-filter" aria-label="기간 필터">
-            {["최근 7일", "최근 30일", "최근 3개월", "전체"].map((item) => (
+            {["오늘 새벽", "최근 7일", "전체"].map((item) => (
               <button className={period === item ? "active" : ""} key={item} type="button" onClick={() => setPeriod(item)}>
                 {item}
               </button>
@@ -1928,7 +1967,7 @@ function RecordsDashboard({ history, onCompareWithDifferentReference, onNewPract
             <div className="records-card-heading">
               <div>
                 <h2>발표 점수 변화</h2>
-                <p>연습을 반복할수록 종합 점수가 어떻게 변화했는지 보여줍니다.</p>
+                <p>오늘 새벽 1회차부터 3회차까지 점수 변화입니다.</p>
               </div>
               <button className="card-select" type="button">
                 {period}
@@ -1955,7 +1994,7 @@ function RecordsDashboard({ history, onCompareWithDifferentReference, onNewPract
             <div className="records-card-heading tight">
               <div>
                 <h2>현재 발표 역량</h2>
-                <p>최근 발표 기준</p>
+                <p>오늘 3회차 기준</p>
               </div>
               <MoreHorizontal size={18} />
             </div>
@@ -2041,7 +2080,7 @@ function RecordsDashboard({ history, onCompareWithDifferentReference, onNewPract
             </div>
           </div>
           <div className="growth-record-grid">
-            {history.map((record) => (
+            {visibleHistory.map((record) => (
               <article className="growth-record-card" key={record.id}>
                 <div className="growth-record-top">
                   <div>
@@ -2144,7 +2183,7 @@ function RecordsDashboard({ history, onCompareWithDifferentReference, onNewPract
           <div className="records-card-heading">
             <div>
               <h2>최근 발표 기록</h2>
-              <p>{period} 기준으로 정리한 레퍼런스 비교 로그입니다.</p>
+              <p>오늘 새벽 시간대의 3개 발표 기록만 정리했습니다.</p>
             </div>
             <span className="score-delta">
               <Clock3 size={15} />
@@ -2155,7 +2194,7 @@ function RecordsDashboard({ history, onCompareWithDifferentReference, onNewPract
             <table className="records-table">
               <thead>
                 <tr>
-                  <th>날짜</th>
+                  <th>시간</th>
                   <th>발표 제목</th>
                   <th>총점</th>
                   <th>기준 레퍼런스</th>
@@ -2164,7 +2203,7 @@ function RecordsDashboard({ history, onCompareWithDifferentReference, onNewPract
                 </tr>
               </thead>
               <tbody>
-                {history.map((record) => (
+                {visibleHistory.map((record) => (
                   <tr key={`${record.id}-${record.title}`}>
                     <td>{record.date}</td>
                     <td>{record.title}</td>

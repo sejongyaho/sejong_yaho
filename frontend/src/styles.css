@@ -3700,6 +3700,39 @@ textarea::placeholder {
   margin-top: 2px;
 }
 
+.custom-reference-loading {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 2px;
+  border: 1px solid rgba(142, 172, 210, 0.28);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(237, 245, 255, 0.92), rgba(255, 253, 247, 0.95));
+  padding: 16px;
+  color: var(--ink);
+}
+
+.custom-reference-loading svg {
+  flex: 0 0 auto;
+  color: #416c9b;
+}
+
+.custom-reference-loading strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.96rem;
+  font-weight: 950;
+}
+
+.custom-reference-loading p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  font-weight: 720;
+  line-height: 1.45;
+}
+
 .saved-analysis-note {
   display: inline-flex;
   align-items: center;

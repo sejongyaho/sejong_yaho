@@ -58,7 +58,7 @@ HARDCODED_REFERENCE_VIDEOS: dict[str, dict[str, Any]] = {
             "pause_timing": "핵심 숫자나 사례 설명 직후 잠깐 쉬는 패턴을 봅니다.",
             "emphasis": "반복되는 핵심어와 숫자 강조를 중심으로 봅니다.",
         },
-        "analysis_note": "하드코딩된 슈카 경제 해설형 레퍼런스 프로필을 사용합니다.",
+        "analysis_note": "슈카 경제 해설형 레퍼런스 프로필을 사용합니다.",
     }
 }
 

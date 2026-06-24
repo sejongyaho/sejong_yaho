@@ -181,53 +181,75 @@ export const sectionImprovements = {
 
 export const mockPracticeHistory = [
   {
-    id: "mock-1",
-    title: "AI 발표 서비스 1차 발표",
-    date: "2026.06.25",
+    id: "mock-3",
+    title: "Pitch up 최종 발표 리허설",
+    date: "오늘 04:35",
     referenceType: "startupPitch",
     referenceName: "스타트업 피칭 스타일",
-    totalScore: 87,
-    previousScore: 82,
+    totalScore: 83,
+    previousScore: 85,
     improvedSection: "쉬는 타이밍",
-    weakSection: "도입부 문제 제기",
-    recentPracticeSection: "도입부",
-    scores: { speed: 80, pause: 78, structure: 82, emphasis: 76, closing: 84 },
-    previousScores: { speed: 72, pause: 60, structure: 75, emphasis: 70, closing: 68 },
+    weakSection: "마무리 임팩트",
+    recentPracticeSection: "마무리",
+    scores: { speed: 82, pause: 80, structure: 84, emphasis: 82, closing: 80 },
+    previousScores: { speed: 84, pause: 83, structure: 86, emphasis: 84, closing: 83 },
     sectionFeedback: {
-      intro: "문제 제기가 이전보다 명확해졌지만, 첫 문장 임팩트는 더 강화할 수 있습니다.",
-      body: "기능 설명은 자연스럽지만, 사용자 가치 설명이 조금 더 필요합니다.",
-      closing: "마무리 문장이 이전보다 강해졌습니다.",
+      intro: "문제 제기가 명확해졌고 첫 문장 뒤 쉬는 타이밍이 안정적입니다.",
+      body: "기능 설명 뒤 사용자 가치가 자연스럽게 이어집니다.",
+      closing: "마무리 문장이 짧아졌지만 마지막 한 문장은 더 강하게 남길 수 있습니다.",
     },
-    nextRecommendation: "도입부에서 문제 제기를 먼저 던지고 1초 쉬는 연습을 해보세요.",
+    nextRecommendation: "마지막 10초에서 서비스 가치를 한 문장으로 압축해 말해보세요.",
   },
   {
     id: "mock-2",
-    title: "창업 아이디어 발표 연습",
-    date: "2026.06.24",
-    referenceType: "ted",
-    referenceName: "TED 스타일",
-    totalScore: 79,
-    previousScore: 74,
-    improvedSection: "스토리텔링",
-    weakSection: "마무리 임팩트",
-    recentPracticeSection: "마무리",
-    scores: { speed: 77, pause: 72, structure: 80, emphasis: 74, closing: 70 },
-    previousScores: { speed: 70, pause: 65, structure: 76, emphasis: 68, closing: 62 },
+    title: "슈카 레퍼런스 기준 발표 연습",
+    date: "오늘 03:20",
+    referenceType: "custom",
+    referenceName: "슈카 유튜브 레퍼런스",
+    totalScore: 85,
+    previousScore: 68,
+    improvedSection: "발표 구조",
+    weakSection: "강조 전달력",
+    recentPracticeSection: "본론",
+    scores: { speed: 84, pause: 83, structure: 86, emphasis: 84, closing: 83 },
+    previousScores: { speed: 66, pause: 60, structure: 69, emphasis: 67, closing: 66 },
     sectionFeedback: {
-      intro: "청중 공감은 좋아졌지만, 첫 문장의 몰입감은 더 높일 수 있습니다.",
-      body: "사례 설명이 자연스럽고 흐름이 안정적입니다.",
-      closing: "마지막에 서비스 가치를 더 강하게 정리하면 좋습니다.",
+      intro: "도입부의 문제 제기는 이전보다 짧고 분명합니다.",
+      body: "경제 해설형 레퍼런스처럼 사례와 핵심 기능을 연결하는 흐름이 좋아졌습니다.",
+      closing: "마지막 메시지의 강세는 아직 더 선명하게 만들 수 있습니다.",
     },
-    nextRecommendation: "마무리에서 핵심 가치를 한 문장으로 압축해 말하는 연습을 해보세요.",
+    nextRecommendation: "핵심 숫자와 기능명 뒤에 짧게 멈추며 강조해보세요.",
+  },
+  {
+    id: "mock-1",
+    title: "AI 발표 서비스 1차 발표",
+    date: "오늘 02:10",
+    referenceType: "startupPitch",
+    referenceName: "스타트업 피칭 스타일",
+    totalScore: 68,
+    previousScore: 62,
+    improvedSection: "도입부 문제 제기",
+    weakSection: "쉬는 타이밍",
+    recentPracticeSection: "도입부",
+    scores: { speed: 66, pause: 60, structure: 69, emphasis: 67, closing: 66 },
+    previousScores: { speed: 60, pause: 54, structure: 62, emphasis: 59, closing: 61 },
+    sectionFeedback: {
+      intro: "서비스 설명보다 문제 상황을 먼저 제시하려는 흐름이 생겼습니다.",
+      body: "기능 설명은 명확하지만 사용자 효과가 조금 늦게 나옵니다.",
+      closing: "마지막 문장이 설명형으로 끝나 임팩트가 약합니다.",
+    },
+    nextRecommendation: "도입부에서 청중이 공감할 질문을 먼저 던지고 1초 쉬어보세요.",
   },
 ];
 
-function todayLabel() {
-  return new Intl.DateTimeFormat("ko-KR", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date()).replace(/\s/g, "");
+const todayDawnLabels = ["오늘 04:35", "오늘 03:20", "오늘 02:10"];
+
+function normalizePracticeHistory(history = mockPracticeHistory) {
+  const source = Array.isArray(history) && history.length ? history : mockPracticeHistory;
+  return source.slice(0, 3).map((record, index) => ({
+    ...record,
+    date: todayDawnLabels[index] || todayDawnLabels.at(-1),
+  }));
 }
 
 export function loadPracticeHistory() {
@@ -235,7 +257,9 @@ export function loadPracticeHistory() {
   try {
     const raw = window.localStorage.getItem(PRACTICE_HISTORY_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
-    return Array.isArray(parsed) && parsed.length ? parsed : mockPracticeHistory;
+    const normalized = normalizePracticeHistory(parsed);
+    persistPracticeHistory(normalized);
+    return normalized;
   } catch {
     return mockPracticeHistory;
   }
@@ -253,7 +277,7 @@ export function buildAnalysisRecord(referenceType = "startupPitch", title = "Pit
   return {
     id: `practice-${Date.now()}`,
     title: title?.trim() || "Pitch up 발표 분석",
-    date: todayLabel(),
+    date: todayDawnLabels[0],
     referenceType: profile.id,
     referenceName: profile.name,
     totalScore: 82,
@@ -273,7 +297,7 @@ export function buildAnalysisRecord(referenceType = "startupPitch", title = "Pit
 }
 
 export function addPracticeHistoryRecord(currentHistory, record) {
-  return persistPracticeHistory([record, ...currentHistory]);
+  return persistPracticeHistory(normalizePracticeHistory([record, ...currentHistory]));
 }
 
 export function completeSectionPractice(currentHistory, recordId, sectionId) {
@@ -308,7 +332,7 @@ export function completeSectionPractice(currentHistory, recordId, sectionId) {
         },
         ...currentHistory,
       ];
-  return persistPracticeHistory(nextHistory);
+  return persistPracticeHistory(normalizePracticeHistory(nextHistory));
 }
 
 export function summarizeReferenceGrowth(history) {

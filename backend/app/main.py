@@ -584,6 +584,7 @@ def merge_report_with_fallback(
     merged["rhythm"] = fallback_report.get("rhythm")
     merged["delivery_match"] = fallback_report.get("delivery_match")
     merged["analysis_meta"] = fallback_report.get("analysis_meta")
+    merged["evaluation_8_level"] = fallback_report.get("evaluation_8_level")
     merged["speech_habits"] = fallback_report.get("speech_habits")
     merged["keyword_feedback"] = fallback_report.get("keyword_feedback")
     merged["presentation_material"] = fallback_report.get("presentation_material")
@@ -871,7 +872,7 @@ def build_timeline_log(session: SessionState) -> list[dict[str, Any]]:
         logs.append(classify_timeline_window(script_tokens, window, previous_transcript))
         previous_transcript = window[-1].transcript.strip()
 
-    return logs
+    return [item for item in logs if item.get("severity") == "low"]
 
 
 def build_keyword_feedback(script: str, transcript: str) -> dict[str, Any]:
@@ -1055,6 +1056,121 @@ def build_analysis_meta(samples: list[MetricSample], transcript: str) -> dict[st
     }
 
 
+EIGHT_LEVEL_SCORES = {
+    8: 100,
+    7: 92,
+    6: 84,
+    5: 74,
+    4: 62,
+    3: 48,
+    2: 32,
+    1: 15,
+}
+
+
+def grade_label(level: int) -> str:
+    return {
+        8: "A+",
+        7: "A",
+        6: "B+",
+        5: "B",
+        4: "C+",
+        3: "C",
+        2: "D",
+        1: "F",
+    }.get(level, "-")
+
+
+def evaluate_pace_level(value: float) -> dict[str, Any]:
+    if 5.8 <= value <= 6.1:
+        level, direction, label = 8, "balanced", "최적"
+    elif 5.6 <= value < 5.8 or 6.1 < value <= 6.3:
+        level, direction, label = 7, "slow" if value < 5.8 else "fast", "매우 안정"
+    elif 5.4 <= value < 5.6 or 6.3 < value <= 6.5:
+        level, direction, label = 6, "slow" if value < 5.6 else "fast", "안정"
+    elif 5.1 <= value < 5.4 or 6.5 < value <= 6.7:
+        level, direction, label = 5, "slow" if value < 5.4 else "fast", "허용 범위"
+    elif 4.8 <= value < 5.1 or 6.7 < value <= 6.9:
+        level, direction, label = 4, "slow" if value < 5.1 else "fast", "약간 주의"
+    elif 4.5 <= value < 4.8 or 6.9 < value <= 7.2:
+        level, direction, label = 3, "slow" if value < 4.8 else "fast", "개선 필요"
+    elif 4.0 <= value < 4.5 or 7.2 < value <= 7.6:
+        level, direction, label = 2, "slow" if value < 4.5 else "fast", "우선 개선"
+    else:
+        level, direction, label = 1, "slow" if value < 4.0 else "fast", ""
+    return {"level": level, "direction": direction, "label": label, "score": EIGHT_LEVEL_SCORES[level]}
+
+
+def evaluate_pause_ratio_level(value: float) -> dict[str, Any]:
+    if 13 <= value <= 17:
+        level, direction = 8, "balanced"
+    elif 11 <= value < 13 or 17 < value <= 19:
+        level, direction = 7, "low" if value < 13 else "high"
+    elif 9 <= value < 11 or 19 < value <= 22:
+        level, direction = 6, "low" if value < 11 else "high"
+    elif 7 <= value < 9 or 22 < value <= 25:
+        level, direction = 5, "low" if value < 9 else "high"
+    elif 5 <= value < 7 or 25 < value <= 28:
+        level, direction = 4, "low" if value < 7 else "high"
+    elif 3 <= value < 5 or 28 < value <= 32:
+        level, direction = 3, "low" if value < 5 else "high"
+    elif 1 <= value < 3 or 32 < value <= 36:
+        level, direction = 2, "low" if value < 3 else "high"
+    else:
+        level, direction = 1, "low" if value < 1 else "high"
+    return {"level": level, "direction": direction, "score": EIGHT_LEVEL_SCORES[level]}
+
+
+def evaluate_longest_pause_level(value: float) -> dict[str, Any]:
+    if value <= 1.5:
+        level = 8
+    elif value <= 2:
+        level = 7
+    elif value <= 2.8:
+        level = 6
+    elif value <= 3.5:
+        level = 5
+    elif value <= 4.5:
+        level = 4
+    elif value <= 6:
+        level = 3
+    elif value <= 8:
+        level = 2
+    else:
+        level = 1
+    return {"level": level, "direction": "long" if level <= 4 else "balanced", "score": EIGHT_LEVEL_SCORES[level]}
+
+
+def build_eight_level_evaluation(speech_rate: float, pause_ratio_percent: float, longest_pause: float) -> dict[str, Any]:
+    pace = evaluate_pace_level(speech_rate)
+    pause_ratio = evaluate_pause_ratio_level(pause_ratio_percent)
+    longest = evaluate_longest_pause_level(longest_pause)
+    silence_level = round(pause_ratio["level"] * 0.6 + longest["level"] * 0.4)
+    if longest_pause > 8:
+        silence_level = min(silence_level, 2)
+    silence_level = int(clamp(silence_level, 1, 8))
+    silence_label = {
+        8: "최적",
+        7: "매우 안정",
+        6: "안정",
+        5: "허용 범위",
+        4: "약간 주의",
+        3: "개선 필요",
+        2: "우선 개선",
+        1: "",
+    }[silence_level]
+    return {
+        "pace": pace,
+        "pause_ratio": pause_ratio,
+        "longest_pause": longest,
+        "silence": {
+            "level": silence_level,
+            "label": silence_label,
+            "score": EIGHT_LEVEL_SCORES[silence_level],
+        },
+    }
+
+
 def build_stt_detailed_feedback(report: dict[str, Any], issue_log: list[dict[str, Any]]) -> dict[str, Any]:
     pace = report["pace"]
     silence = report["silence"]
@@ -1073,6 +1189,28 @@ def build_stt_detailed_feedback(report: dict[str, Any], issue_log: list[dict[str
         }
 
     priorities = []
+    evaluation = report.get("evaluation_8_level") or build_eight_level_evaluation(
+        pace["syllables_per_second"],
+        silence["pause_ratio_percent"],
+        silence["longest_seconds"],
+    )
+    pace_level = evaluation["pace"]["level"]
+    if pace_level <= 4:
+        pace_direction = evaluation["pace"]["direction"]
+        pace_action = (
+            "문장 사이를 빠르게 연결해 전체 흐름을 끌어올려 보세요."
+            if pace_direction == "slow"
+            else "핵심 문장 뒤에 짧은 쉼을 넣어 정보가 머물 시간을 주세요."
+        )
+        priorities.append(
+            f"말하기 속도는 {grade_label(pace_level)} 등급입니다. 평균 {pace['syllables_per_second']:.1f}음절/초이며, {pace_action}"
+        )
+    silence_level = evaluation["silence"]["level"]
+    if silence_level <= 4:
+        priorities.append(
+            f"쉼 타이밍은 {grade_label(silence_level)} 등급입니다. 쉬는 시간 비중 {silence['pause_ratio_percent']:.1f}%, "
+            f"최장 멈춤 {silence['longest_seconds']:.1f}초를 기준으로 먼저 개선해 보세요."
+        )
     if silence["pause_ratio_percent"] >= 25 or silence["longest_seconds"] >= 6:
         priorities.append("잠깐 멈추는 구간이 조금 있습니다. 다음 문장으로 넘어갈 연결 문장을 미리 준비해 두세요.")
     if pace["syllables_per_second"] > 6.8:
@@ -1841,10 +1979,13 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
     for sample in samples:
         reaction_counts[sample.reaction] = reaction_counts.get(sample.reaction, 0) + 1
 
-    pace_score = score_distance(speech_rate, 6.0, 1.2)
-    pause_score = score_distance(pause_ratio, 0.15, 0.12)
-    if pause_ratio >= 0.25:
-        pause_score = min(pause_score, 55)
+    eight_level_evaluation = build_eight_level_evaluation(
+        speech_rate,
+        pause_ratio * 100,
+        longest_silence,
+    )
+    pace_score = eight_level_evaluation["pace"]["score"]
+    pause_score = eight_level_evaluation["silence"]["score"]
     gap_score = score_distance(rate_gap, 1.1, 0.9)
     rhythm_score = clamp(100 - rate_variability * 22 - slow_sample_ratio * 35, 35, 100)
     habit_penalty = min(18, speech_habits["filler_total"] * 1.6 + speech_habits["vague_total"] * 1.2 + speech_habits["repair_total"] * 2.0)
@@ -1870,6 +2011,48 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
     if analysis_meta["level"] == "insufficient":
         strengths.append("짧게라도 말한 내용이 모여 기본 흐름은 확인할 수 있었습니다.")
         improvements.append("발화 길이가 짧아 신뢰도 있는 분석이 어렵습니다. 30초 이상 이어서 말해보세요.")
+    pace_level = eight_level_evaluation["pace"]["level"]
+    pace_direction = eight_level_evaluation["pace"]["direction"]
+    if pace_level >= 7:
+        strengths.append(
+            f"말하기 속도가 {speech_rate:.1f}음절/초로 안정적입니다. 청중이 핵심 내용을 따라가기 좋은 흐름입니다."
+        )
+    elif pace_level == 6:
+        strengths.append(
+            f"말하기 속도가 {speech_rate:.1f}음절/초로 대체로 안정적입니다. 현재 리듬을 조금만 더 일정하게 유지해 보세요."
+        )
+    elif pace_level <= 4:
+        pace_word = "느린" if pace_direction == "slow" else "빠른"
+        action = (
+            "문장 사이의 공백을 줄여 자연스럽게 이어가 보세요."
+            if pace_direction == "slow"
+            else "핵심어 앞뒤에 짧은 쉼을 넣어 보세요."
+        )
+        improvements.append(f"말하기 속도가 {speech_rate:.1f}음절/초로 {pace_word} 편입니다. {action}")
+
+    silence_level = eight_level_evaluation["silence"]["level"]
+    pause_percent = pause_ratio * 100
+    if silence_level >= 7:
+        strengths.append(
+            f"쉼 타이밍이 안정적입니다. 쉬는 시간 비중은 {pause_percent:.1f}%, 가장 긴 멈춤은 {longest_silence:.1f}초였습니다."
+        )
+    elif silence_level == 6:
+        strengths.append(
+            f"쉼의 흐름이 대체로 자연스럽습니다. 쉬는 시간 비중 {pause_percent:.1f}%와 최장 멈춤 {longest_silence:.1f}초를 유지해 보세요."
+        )
+    elif silence_level <= 4:
+        if longest_silence > 4.5:
+            improvements.append(
+                f"가장 긴 멈춤이 {longest_silence:.1f}초로 발표 연결감이 약해질 수 있습니다. 다음 문장을 잇는 표현을 미리 준비해 보세요."
+            )
+        elif eight_level_evaluation["pause_ratio"]["direction"] == "high":
+            improvements.append(
+                f"쉬는 시간 비중이 {pause_percent:.1f}%로 많은 편입니다. 의미 단위 사이의 공백을 조금 줄여 보세요."
+            )
+        else:
+            improvements.append(
+                f"쉬는 시간 비중이 {pause_percent:.1f}%로 적은 편입니다. 중요한 문장 뒤에 짧은 여백을 남겨 보세요."
+            )
     if 5.6 <= speech_rate <= 6.3:
         strengths.append("말 속도가 안정적이라 핵심 내용이 따라가기 좋습니다.")
     elif speech_rate < 5.0:
@@ -1929,6 +2112,7 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
             "spoken_syllables": syllables,
         },
         "analysis_meta": analysis_meta,
+        "evaluation_8_level": eight_level_evaluation,
         "speech_habits": speech_habits,
         "criteria_basis": presentation_criteria(),
         "keyword_feedback": keyword_feedback,

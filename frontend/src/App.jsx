@@ -2417,17 +2417,19 @@ function visibleReportSummary(report) {
 }
 
 function Report({ aiStatus, onGoRecords, report, materialFeedback, scriptFeedback, spokenWords }) {
-  const aiLive = Boolean(report.used_openai || report.used_gemini);
+  const [showTimelineLog, setShowTimelineLog] = useState(false);
+  const [showProblemLog, setShowProblemLog] = useState(false);
   const aiSourceLabel = report.used_openai ? "GPT Coaching" : report.used_gemini ? "AI Coaching" : "Basic Coaching";
   const metricSourceLabel = report.used_openai ? "GPT + 수집 메트릭 기반" : report.used_gemini ? "AI + 수집 메트릭 기반" : "수집 메트릭 기반";
   const analysisMeta = report.analysis_meta || {};
   const analysisBasis = report.analysis_basis || {};
   const scoreVisible = analysisMeta.score_visible !== false;
   const score = report.overall_score ?? 0;
+  const evaluation8 = report.evaluation_8_level || buildEightLevelEvaluation(report);
   const quickSummary = buildQuickSummary(report);
   const reportSummary = visibleReportSummary(report);
   const issueLog = dedupeIssues(report.issue_log || [], 12);
-  const timelineLog = cleanIssues(report.timeline_log || [], 20);
+  const timelineLog = cleanIssues(report.timeline_log || [], 20).filter((item) => item.severity === "low");
   const strengths = dedupeTextItems(report.strengths || [], 4);
   const priorityFeedback = dedupeTextItems(report.detailed_feedback?.priority_feedback || report.improvements || [], 5);
   const practicePlan = dedupeTextItems(report.detailed_feedback?.practice_plan || [], 5);
@@ -2439,7 +2441,7 @@ function Report({ aiStatus, onGoRecords, report, materialFeedback, scriptFeedbac
       <div className="report-summary-card">
         <div>
           <p className="eyebrow">{aiSourceLabel} · {analysisMeta.summary_label || "정식 결과"}</p>
-          <h2>{!scoreVisible ? "말한 내용이 더 쌓이면 더 정확하게 볼 수 있어요" : score >= 80 ? "전달력이 좋은 발표였어요" : score >= 60 ? "조금만 다듬으면 더 좋아져요" : "발표 흐름을 다시 잡아보세요"}</h2>
+          <h2 className={!scoreVisible ? "report-summary-pending-title" : undefined}>{!scoreVisible ? "말한 내용이 더 쌓이면 더 정확하게 볼 수 있어요" : score >= 80 ? "전달력이 좋은 발표였어요" : score >= 60 ? "조금만 다듬으면 더 좋아져요" : "발표 흐름을 다시 잡아보세요"}</h2>
           <p>{quickSummary}</p>
           <p className="report-summary-detail">{reportSummary}</p>
         </div>
@@ -2449,16 +2451,18 @@ function Report({ aiStatus, onGoRecords, report, materialFeedback, scriptFeedbac
         </div>
       </div>
 
+      <EightLevelGuide />
+
       <div className="report-pill-row">
-        <ResultPill label="속도" value={userReportPace(report)} />
-        <ResultPill label="쉼 타이밍" value={userReportSilence(report)} />
+        <ResultPill label="속도" value={userReportPace(report, evaluation8)} />
+        <ResultPill label="쉼 타이밍" value={userReportSilence(report, evaluation8)} />
         <ResultPill label="내용 전달" value={userReportDelivery(report)} />
       </div>
 
       <div className="detail-score-grid result-metric-grid">
-        <ScoreDetail label="말하기 속도" value={`${report.pace?.syllables_per_second ?? 0} 음절/초`} hint="자연스러운 목표 5.6-6.3" />
-        <ScoreDetail label="가장 길게 멈춘 시간" value={`${report.silence?.longest_seconds ?? 0}초`} hint="5초 이상이면 흐름이 끊길 수 있어요" />
-        <ScoreDetail label="쉬는 시간 비중" value={`${report.silence?.pause_ratio_percent ?? 0}%`} hint="보통 약 15%가 자연스러워요" />
+        <ScoreDetail label="말하기 속도" value={`${report.pace?.syllables_per_second ?? 0} 음절/초`} hint={`${gradeLabel(evaluation8.pace.level)} 등급 · ${paceLevelText(evaluation8.pace)}`} />
+        <ScoreDetail label="가장 길게 멈춘 시간" value={`${report.silence?.longest_seconds ?? 0}초`} hint={[`${gradeLabel(evaluation8.longest_pause.level)} 등급`, levelLabel(evaluation8.longest_pause.level)].filter(Boolean).join(" · ")} />
+        <ScoreDetail label="쉬는 시간 비중" value={`${report.silence?.pause_ratio_percent ?? 0}%`} hint={`${gradeLabel(evaluation8.pause_ratio.level)} 등급 · ${pauseRatioLevelText(evaluation8.pause_ratio)}`} />
         <ScoreDetail label="말한 단어 수" value={`${analysisMeta.spoken_words ?? report.delivery_match?.spoken_words ?? 0}개`} hint="말한 내용 기준" />
         <ScoreDetail label="인식 구간 수" value={`${analysisMeta.speech_samples ?? 0}개`} hint="말이 실제로 잡힌 구간" />
       </div>
@@ -2466,48 +2470,48 @@ function Report({ aiStatus, onGoRecords, report, materialFeedback, scriptFeedbac
       {referenceSpeakerComparison ? (
         <section className="reference-report reference-speaker-report">
           <div className="section-heading">
-            <h3>기준 발표자 비교</h3>
+            <h3>레퍼런스 비교</h3>
             <span>{referenceSpeakerComparison.summary?.similarity_score ?? 0}점 유사</span>
           </div>
           <strong>
-            {referenceSpeakerComparison.reference?.name} · {referenceSpeakerComparison.reference?.style_type}
+            {cleanReferenceCopy(referenceSpeakerComparison.reference?.name)} · {cleanReferenceCopy(referenceSpeakerComparison.reference?.style_type)}
           </strong>
-          <p>{referenceSpeakerComparison.reference?.description}</p>
+          <p>{cleanReferenceCopy(referenceSpeakerComparison.reference?.description)}</p>
           <div className="reference-metric-grid">
             <ScoreDetail
-              label="말 밀도"
-              value={`${referenceSpeakerComparison.summary?.user_speech_density_avg ?? 0} WPM`}
-              hint={`기준 ${referenceSpeakerComparison.summary?.reference_speech_density_avg ?? 0} WPM · ${referenceSpeakerComparison.summary?.density_diff_percent ?? 0}%`}
+              label="말하기 속도"
+              value={`분당 ${referenceSpeakerComparison.summary?.user_speech_density_avg ?? 0}단어 (${referenceDensityDifferenceText(referenceSpeakerComparison.summary)})`}
+              hint={`레퍼런스 분당 ${referenceSpeakerComparison.summary?.reference_speech_density_avg ?? 0}단어`}
             />
             <ScoreDetail
-              label="평균 쉼"
+              label="문장 사이 평균 쉼"
               value={`${referenceSpeakerComparison.summary?.user_avg_pause_sec ?? 0}초`}
-              hint={`기준 ${referenceSpeakerComparison.summary?.reference_avg_pause_sec ?? 0}초`}
+              hint={`레퍼런스 ${referenceSpeakerComparison.summary?.reference_avg_pause_sec ?? 0}초`}
             />
             <ScoreDetail
-              label="긴 쉼"
+              label="1초 이상 긴 쉼"
               value={`${referenceSpeakerComparison.summary?.user_long_pause_count_ge_1s ?? 0}회`}
-              hint={`기준 ${referenceSpeakerComparison.summary?.reference_long_pause_count_ge_1s ?? 0}회`}
+              hint={`레퍼런스 ${referenceSpeakerComparison.summary?.reference_long_pause_count_ge_1s ?? 0}회`}
             />
             <ScoreDetail
-              label="강조 변화"
+              label="목소리 크기 변화"
               value={`${referenceSpeakerComparison.summary?.user_volume_variation_db ?? 0}`}
-              hint={`기준 ${referenceSpeakerComparison.summary?.reference_volume_variation_db ?? 0}`}
+              hint={`레퍼런스 ${referenceSpeakerComparison.summary?.reference_volume_variation_db ?? 0}`}
             />
           </div>
           <ul>
             {(referenceSpeakerComparison.feedback || []).map((item) => (
-              <li key={item}>{item}</li>
+              <li key={item}>{cleanReferenceCopy(item)}</li>
             ))}
           </ul>
           <div className="reference-section-grid">
             {(referenceSpeakerComparison.section_feedback || []).map((section) => (
               <article key={section.section}>
                 <h4>{section.label}</h4>
-                <p>{section.density_feedback}</p>
-                <p>{section.pause_feedback}</p>
+                <p>{cleanReferenceCopy(section.density_feedback)}</p>
+                <p>{cleanReferenceCopy(section.pause_feedback)}</p>
                 <span>
-                  내 발표 {section.user?.speech_density ?? 0} WPM / {section.user?.avg_pause_sec ?? 0}초 쉼
+                  내 발표 분당 {section.user?.speech_density ?? 0}단어 / 평균 {section.user?.avg_pause_sec ?? 0}초 쉼
                 </span>
               </article>
             ))}
@@ -2533,46 +2537,14 @@ function Report({ aiStatus, onGoRecords, report, materialFeedback, scriptFeedbac
 
       <div className="feedback-columns service-feedback">
         <FeedbackList title="잘한 점" items={strengths} />
-        <FeedbackList title="우선 고칠 점" items={priorityFeedback} />
+        <FeedbackList title="우선 개선할 점" items={priorityFeedback} />
       </div>
 
-      <section className="issue-section">
-        <div className="section-heading">
-          <h3>발표 타임라인 로그</h3>
-          <span>{timelineLog.length}개 구간</span>
-        </div>
-        {timelineLog.length ? (
-          <div className="issue-list">
-            {timelineLog.map((issue) => (
-              <IssueItem key={`${issue.time}-${issue.type}-${issue.title}`} issue={issue} compact />
-            ))}
-          </div>
-        ) : (
-          <p className="issue-empty">아직 전체 타임라인 로그가 생성되지 않았습니다. 이 영역은 발표 전체 구간 로그만 표시합니다.</p>
-        )}
-      </section>
-
-      <section className="issue-section">
-        <div className="section-heading">
-          <h3>문제 구간 로그</h3>
-          <span>{issueLog.length}개 구간</span>
-        </div>
-        {issueLog.length ? (
-          <div className="issue-list">
-            {issueLog.map((issue) => (
-              <IssueItem key={`${issue.time}-${issue.type}-${issue.title}-issue`} issue={issue} compact />
-            ))}
-          </div>
-        ) : (
-          <p className="issue-empty">눈에 띄는 경고 구간은 따로 잡히지 않았습니다.</p>
-        )}
-      </section>
-
       <section className="report-two-column">
-        <div className="keyword-card">
+        <div className="keyword-card analysis-basis-card">
           <h3>분석 근거</h3>
           <p>이번 리포트가 실제로 참고한 인식 데이터입니다.</p>
-          <KeywordGroup title="분석 단계" items={[analysisMeta.summary_label || "정식 분석"]} emptyText="분석 단계 정보가 없습니다." />
+          <KeywordGroup title="분석 상태" items={[analysisMeta.summary_label || "정식 분석"]} emptyText="분석 상태 정보가 없습니다." />
           <KeywordGroup
             title="분석 소스"
             items={[metricSourceLabel]}
@@ -2589,22 +2561,22 @@ function Report({ aiStatus, onGoRecords, report, materialFeedback, scriptFeedbac
             emptyText="수집 정보가 없습니다."
           />
         </div>
-        <div className="practice-plan-card">
-          <h3>STT 전문</h3>
-          <p>{fullTranscript || "아직 표시할 STT 전문이 없습니다."}</p>
-        </div>
-      </section>
-
-      <section className="report-two-column">
-        <div className="keyword-card">
+        <div className="keyword-card speech-habits-card">
           <h3>말 습관 분석</h3>
           <p>말한 내용을 바탕으로 자주 나온 말 습관을 정리했습니다.</p>
           <KeywordGroup title="추임새" items={Object.entries(report.speech_habits?.filler_counts || {}).map(([key, value]) => `${key} ${value}회`)} emptyText="눈에 띄는 추임새가 많지 않습니다." />
           <KeywordGroup title="반복 표현" items={(report.speech_habits?.repeated_tokens || []).map((item) => `${item.token} ${item.count}회`)} emptyText="과도한 반복 표현은 크지 않습니다." />
           <KeywordGroup title="주의 메모" items={report.speech_habits?.notes || []} emptyText="특이한 말 습관 메모가 없습니다." />
         </div>
-        <div className="practice-plan-card">
-          <h3>다음 연습 계획</h3>
+      </section>
+
+      <section className="report-two-column">
+        <div className="practice-plan-card transcript-report-card">
+          <h3>STT 전문</h3>
+          <p>{fullTranscript || "아직 표시할 STT 전문이 없습니다."}</p>
+        </div>
+        <div className="practice-plan-card next-practice-card">
+          <h3>다음 개선 계획</h3>
           <ol>
             {practicePlan.map((item) => (
               <li key={item}>{item}</li>
@@ -2639,15 +2611,68 @@ function Report({ aiStatus, onGoRecords, report, materialFeedback, scriptFeedbac
         </div>
       ) : null}
 
-      <div className="report-note">
-        {aiLive ? (report.used_openai ? "GPT 분석이 반영된 리포트입니다." : "AI 분석이 반영된 리포트입니다.") : "AI 연결이 불안정해 기본 분석으로 리포트를 만들었습니다."}
-      </div>
-      <div className="report-bottom-actions">
-        <button className="secondary-button" type="button" onClick={onGoRecords}>
+      {showTimelineLog ? (
+        <section className="issue-section timeline-log-section" id="timeline-log-panel">
+          <div className="section-heading">
+            <h3>발표 타임라인 로그</h3>
+            <span>{timelineLog.length}개 구간</span>
+          </div>
+          {timelineLog.length ? (
+            <div className="issue-list">
+              {timelineLog.map((issue) => (
+                <IssueItem key={`${issue.time}-${issue.type}-${issue.title}`} issue={issue} compact positive />
+              ))}
+            </div>
+          ) : (
+            <p className="issue-empty">아직 안정적으로 수행한 구간이 충분히 잡히지 않았습니다.</p>
+          )}
+        </section>
+      ) : null}
+
+      {showProblemLog ? (
+        <section className="issue-section problem-log-section" id="problem-log-panel">
+          <div className="section-heading">
+            <h3>문제 구간 로그</h3>
+            <span>{issueLog.length}개 구간</span>
+          </div>
+          {issueLog.length ? (
+            <div className="issue-list">
+              {issueLog.map((issue) => (
+                <IssueItem key={`${issue.time}-${issue.type}-${issue.title}-issue`} issue={issue} compact />
+              ))}
+            </div>
+          ) : (
+            <p className="issue-empty">눈에 띄는 경고 구간은 따로 잡히지 않았습니다.</p>
+          )}
+        </section>
+      ) : null}
+
+      <footer className="report-footer-row">
+        <button
+          aria-controls="timeline-log-panel"
+          aria-expanded={showTimelineLog}
+          className="report-footer-button timeline-log-button"
+          type="button"
+          onClick={() => setShowTimelineLog((current) => !current)}
+        >
+          <ChevronDown className={showTimelineLog ? "expanded" : ""} size={18} />
+          발표 타임라인 로그 {showTimelineLog ? "접기" : "보기"}
+        </button>
+        <button
+          aria-controls="problem-log-panel"
+          aria-expanded={showProblemLog}
+          className="report-footer-button problem-log-button"
+          type="button"
+          onClick={() => setShowProblemLog((current) => !current)}
+        >
+          <ChevronDown className={showProblemLog ? "expanded" : ""} size={18} />
+          문제 구간 로그 {showProblemLog ? "접기" : "보기"}
+        </button>
+        <button className="primary-button report-footer-button" type="button" onClick={onGoRecords}>
           <LayoutDashboard size={17} />
           내 기록으로 이동
         </button>
-      </div>
+      </footer>
     </section>
   );
 }
@@ -2668,7 +2693,7 @@ function compactLogText(text, maxLength = 84) {
   return value.length > maxLength ? `${value.slice(0, maxLength).trim()}...` : value;
 }
 
-function IssueItem({ compact = false, issue }) {
+function IssueItem({ compact = false, issue, positive = false }) {
   const evidence = compact ? compactLogText(issue.evidence, 68) : issue.evidence;
   const excerpt = compact ? compactLogText(issue.spoken_excerpt, 72) : issue.spoken_excerpt;
   return (
@@ -2677,7 +2702,7 @@ function IssueItem({ compact = false, issue }) {
       <div className="issue-body">
         <div className="issue-title-row">
           <h4>{issue.title}</h4>
-          <span>{severityLabel(issue.severity)}</span>
+          <span>{positive ? "잘한 점" : severityLabel(issue.severity)}</span>
         </div>
         <p className="issue-evidence">{evidence}</p>
         {excerpt ? <p className="issue-quote">{excerpt}</p> : null}
@@ -2712,6 +2737,35 @@ function ResultPill({ label, value }) {
   );
 }
 
+const EIGHT_LEVEL_GUIDE = [
+  { level: 1, grade: "F" },
+  { level: 2, grade: "D" },
+  { level: 3, grade: "C" },
+  { level: 4, grade: "C+" },
+  { level: 5, grade: "B" },
+  { level: 6, grade: "B+" },
+  { level: 7, grade: "A" },
+  { level: 8, grade: "A+" },
+];
+
+function EightLevelGuide() {
+  return (
+    <section className="eight-level-guide" aria-label="발표 분석 등급 기준">
+      <div className="eight-level-guide-heading">
+        <strong>분석 등급 안내</strong>
+        <span>F에 가까울수록 개선이 필요하고, A+에 가까울수록 안정적입니다.</span>
+      </div>
+      <div className="eight-level-scale">
+        {EIGHT_LEVEL_GUIDE.map((item) => (
+          <div className={`eight-level-step level-${item.level}`} key={item.grade}>
+            <strong>{item.grade}</strong>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function FeedbackList({ title, items = [] }) {
   return (
     <div className="feedback-card">
@@ -2725,18 +2779,114 @@ function FeedbackList({ title, items = [] }) {
   );
 }
 
-function userReportPace(report) {
-  const sps = report.pace?.syllables_per_second ?? 0;
-  if (sps >= 5.6 && sps <= 6.3) return "좋음";
-  if (sps > 6.3) return "빠름";
-  return "느림";
+const EIGHT_LEVEL_SCORES = { 8: 100, 7: 92, 6: 84, 5: 74, 4: 62, 3: 48, 2: 32, 1: 15 };
+
+function levelLabel(level) {
+  const labels = {
+    8: "최적",
+    7: "매우 안정",
+    6: "안정",
+    5: "허용 범위",
+    4: "약간 주의",
+    3: "개선 필요",
+    2: "우선 개선",
+    1: "",
+  };
+  return labels[level] ?? "확인 필요";
 }
 
-function userReportSilence(report) {
-  const ratio = report.silence?.pause_ratio_percent ?? 0;
-  if (ratio >= 25) return "조금 김";
-  if (ratio >= 10 && ratio <= 20) return "자연스러움";
-  return "보통";
+function gradeLabel(level) {
+  return {
+    8: "A+",
+    7: "A",
+    6: "B+",
+    5: "B",
+    4: "C+",
+    3: "C",
+    2: "D",
+    1: "F",
+  }[level] || "-";
+}
+
+function cleanReferenceCopy(value) {
+  return String(value || "")
+    .replaceAll("기준 발표자", "레퍼런스")
+    .replaceAll("말 밀도", "말하기 속도")
+    .replaceAll("WPM", "단어/분");
+}
+
+function referenceDensityDifferenceText(summary = {}) {
+  const difference = Number(summary.density_diff_percent ?? 0);
+  if (Math.abs(difference) < 0.1) return "레퍼런스와 비슷";
+  return `레퍼런스보다 ${Math.abs(difference)}% ${difference < 0 ? "낮음" : "높음"}`;
+}
+
+function evaluatePaceLevel(value) {
+  let level;
+  let direction;
+  if (value >= 5.8 && value <= 6.1) [level, direction] = [8, "balanced"];
+  else if ((value >= 5.6 && value < 5.8) || (value > 6.1 && value <= 6.3)) [level, direction] = [7, value < 5.8 ? "slow" : "fast"];
+  else if ((value >= 5.4 && value < 5.6) || (value > 6.3 && value <= 6.5)) [level, direction] = [6, value < 5.6 ? "slow" : "fast"];
+  else if ((value >= 5.1 && value < 5.4) || (value > 6.5 && value <= 6.7)) [level, direction] = [5, value < 5.4 ? "slow" : "fast"];
+  else if ((value >= 4.8 && value < 5.1) || (value > 6.7 && value <= 6.9)) [level, direction] = [4, value < 5.1 ? "slow" : "fast"];
+  else if ((value >= 4.5 && value < 4.8) || (value > 6.9 && value <= 7.2)) [level, direction] = [3, value < 4.8 ? "slow" : "fast"];
+  else if ((value >= 4 && value < 4.5) || (value > 7.2 && value <= 7.6)) [level, direction] = [2, value < 4.5 ? "slow" : "fast"];
+  else [level, direction] = [1, value < 4 ? "slow" : "fast"];
+  return { level, direction, label: levelLabel(level), score: EIGHT_LEVEL_SCORES[level] };
+}
+
+function evaluatePauseRatioLevel(value) {
+  let level;
+  let direction;
+  if (value >= 13 && value <= 17) [level, direction] = [8, "balanced"];
+  else if ((value >= 11 && value < 13) || (value > 17 && value <= 19)) [level, direction] = [7, value < 13 ? "low" : "high"];
+  else if ((value >= 9 && value < 11) || (value > 19 && value <= 22)) [level, direction] = [6, value < 11 ? "low" : "high"];
+  else if ((value >= 7 && value < 9) || (value > 22 && value <= 25)) [level, direction] = [5, value < 9 ? "low" : "high"];
+  else if ((value >= 5 && value < 7) || (value > 25 && value <= 28)) [level, direction] = [4, value < 7 ? "low" : "high"];
+  else if ((value >= 3 && value < 5) || (value > 28 && value <= 32)) [level, direction] = [3, value < 5 ? "low" : "high"];
+  else if ((value >= 1 && value < 3) || (value > 32 && value <= 36)) [level, direction] = [2, value < 3 ? "low" : "high"];
+  else [level, direction] = [1, value < 1 ? "low" : "high"];
+  return { level, direction, score: EIGHT_LEVEL_SCORES[level] };
+}
+
+function evaluateLongestPauseLevel(value) {
+  const level = value <= 1.5 ? 8 : value <= 2 ? 7 : value <= 2.8 ? 6 : value <= 3.5 ? 5 : value <= 4.5 ? 4 : value <= 6 ? 3 : value <= 8 ? 2 : 1;
+  return { level, direction: level <= 4 ? "long" : "balanced", score: EIGHT_LEVEL_SCORES[level] };
+}
+
+function buildEightLevelEvaluation(report) {
+  const pace = evaluatePaceLevel(report.pace?.syllables_per_second ?? 0);
+  const pauseRatio = evaluatePauseRatioLevel(report.silence?.pause_ratio_percent ?? 0);
+  const longestPause = evaluateLongestPauseLevel(report.silence?.longest_seconds ?? 0);
+  let silenceLevel = Math.round(pauseRatio.level * 0.6 + longestPause.level * 0.4);
+  if ((report.silence?.longest_seconds ?? 0) > 8) silenceLevel = Math.min(silenceLevel, 2);
+  silenceLevel = Math.max(1, Math.min(8, silenceLevel));
+  return {
+    pace,
+    pause_ratio: pauseRatio,
+    longest_pause: longestPause,
+    silence: { level: silenceLevel, label: levelLabel(silenceLevel), score: EIGHT_LEVEL_SCORES[silenceLevel] },
+  };
+}
+
+function paceLevelText(pace) {
+  const label = levelLabel(pace.level);
+  if (pace.direction === "balanced") return label;
+  return [label, pace.direction === "slow" ? "느린 편" : "빠른 편"].filter(Boolean).join(" · ");
+}
+
+function pauseRatioLevelText(pauseRatio) {
+  const label = levelLabel(pauseRatio.level);
+  if (pauseRatio.direction === "balanced") return label;
+  return [label, pauseRatio.direction === "low" ? "쉼이 적은 편" : "쉼이 많은 편"].filter(Boolean).join(" · ");
+}
+
+function userReportPace(report, evaluation = buildEightLevelEvaluation(report)) {
+  return [`${gradeLabel(evaluation.pace.level)} 등급`, paceLevelText(evaluation.pace)].filter(Boolean).join(" · ");
+}
+
+function userReportSilence(report, evaluation = buildEightLevelEvaluation(report)) {
+  return [`${gradeLabel(evaluation.silence.level)} 등급`, levelLabel(evaluation.silence.level)].filter(Boolean).join(" · ");
 }
 
 function userReportDelivery(report) {
@@ -2750,8 +2900,9 @@ function userReportDelivery(report) {
 }
 
 function buildQuickSummary(report) {
-  const pace = userReportPace(report);
-  const silence = userReportSilence(report);
+  const evaluation = report.evaluation_8_level || buildEightLevelEvaluation(report);
+  const pace = userReportPace(report, evaluation);
+  const silence = userReportSilence(report, evaluation);
   const delivery = userReportDelivery(report);
   return `말하기 속도는 ${pace}, 쉬는 타이밍은 ${silence}, 내용 전달은 ${delivery} 상태입니다.`;
 }

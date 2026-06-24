@@ -53,6 +53,7 @@ from .runtime_state import ai_status_cache, gemini_limiter, gemini_runtime_state
 from .session_store import append_metric as persist_metric
 from .session_store import init_session_store, load_session as load_persisted_session, save_session
 from .services.gemini_service import call_gemini_api
+from .services.reference_compare_service import build_user_profile_from_samples, compare_with_reference
 from .services.reference_service import build_reference_comparison, build_reference_video
 from .services.text_service import (
     clamp,
@@ -839,6 +840,7 @@ def build_ai_prompt_payload(session: SessionState, fallback_report: dict[str, An
             "criteria_basis": fallback_report.get("criteria_basis"),
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
+            "reference_speaker_comparison": fallback_report.get("reference_speaker_comparison"),
             "audience_reactions": fallback_report.get("audience_reactions", {}),
         },
         "required_schema": {
@@ -858,6 +860,7 @@ def build_ai_prompt_payload(session: SessionState, fallback_report: dict[str, An
             "criteria_basis": fallback_report["criteria_basis"],
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
+            "reference_speaker_comparison": fallback_report.get("reference_speaker_comparison"),
             "audience_reactions": fallback_report["audience_reactions"],
         },
     }
@@ -1529,6 +1532,10 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         report["reference_video"] = session.reference_video
         report["reference_comparison"] = build_reference_comparison(report, session.reference_video)
 
+    user_reference_profile = build_user_profile_from_samples(samples)
+    if user_reference_profile:
+        report["reference_speaker_comparison"] = compare_with_reference(user_reference_profile)
+
     return polish_user_report_text(sanitize_report_for_user(report))
 
 
@@ -1577,6 +1584,7 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
             "presentation_material": fallback_report.get("presentation_material", {}),
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
+            "reference_speaker_comparison": fallback_report.get("reference_speaker_comparison"),
             "audience_reactions": fallback_report["audience_reactions"],
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
@@ -1593,10 +1601,11 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
             response = await client.post(url, params={"key": api_key}, json=payload)
             response.raise_for_status()
             data = response.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        report = json.loads(text)
-        report["used_gemini"] = True
-        return polish_user_report_text(sanitize_report_for_user(report))
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            report = json.loads(text)
+            report["used_gemini"] = True
+            report.setdefault("reference_speaker_comparison", fallback_report.get("reference_speaker_comparison"))
+            return polish_user_report_text(sanitize_report_for_user(report))
     except Exception:
         fallback_report["summary"] = "기본 분석으로 리포트를 정리했습니다. 지금 연습에서 바로 고칠 부분을 중심으로 확인해 주세요."
         return polish_user_report_text(sanitize_report_for_user(fallback_report))
@@ -1604,7 +1613,8 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
 
 async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[str, Any]) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
+    use_gemini_final_report = os.getenv("ENABLE_GEMINI_FINAL_REPORT", "false").lower() in {"1", "true", "yes"}
+    if not api_key or not use_gemini_final_report:
         return polish_user_report_text(sanitize_report_for_user(fallback_report))
 
     prompt = build_ai_prompt_payload(session, fallback_report)
@@ -1617,17 +1627,25 @@ async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[
         data, remaining = await call_gemini_api(
             kind="final_report",
             payload=payload,
-            timeout_seconds=40,
+            timeout_seconds=6,
             count_against_limit=True,
-            retry_on_unavailable=2,
+            retry_on_unavailable=0,
         )
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        text = (
+            ((data or {}).get("candidates") or [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text")
+        )
+        if not text:
+            return sanitize_report_for_user(fallback_report)
         report = json.loads(text)
         report["used_gemini"] = True
         report["gemini_limits"] = {
             "rate_limited": False,
             "remaining_calls": remaining,
         }
+        report.setdefault("reference_speaker_comparison", fallback_report.get("reference_speaker_comparison"))
         return polish_user_report_text(sanitize_report_for_user(report))
     except GeminiRateLimitError as exc:
         fallback_report["summary"] = "AI 분석이 잠시 막혀 기본 리포트로 정리했습니다. 지금 바로 고칠 부분부터 확인해 주세요."

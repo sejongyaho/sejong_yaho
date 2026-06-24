@@ -85,6 +85,82 @@ function pageFromPath(pathname) {
   return "setup";
 }
 
+const REFERENCE_VIDEO_TEMPLATE = {
+  video_id: "reference-speaker",
+  title: "경제 해설형 발표자 기준",
+  author_name: "레퍼런스 기준 모델",
+  thumbnail_url: "",
+  analysis_note: "입력한 영상의 화면은 썸네일로 확인하고, 발표 분석은 경제 해설형 발표자 기준으로 비교합니다.",
+  reference_profile: {
+    transcript_source: "demo_profile",
+    syllables_per_second: 5.8,
+    words_per_minute: 92.9,
+    average_sentence_words: 13,
+    top_keywords: ["경제 해설", "고밀도 설명", "짧은 쉼", "음량 강조", "정보 전달"],
+    speech_rate_summary: "분당 약 93단어 수준으로, 설명을 끊기지 않게 이어가는 고밀도 말하기 속도입니다.",
+    speaking_style: "차분하지만 정보량이 많은 해설형 말투입니다. 핵심 개념을 짧은 문장으로 이어 붙이며 설명합니다.",
+    pause_timing_summary: "평균 쉼은 약 0.54초로 짧습니다. 긴 침묵보다 문장 사이의 짧은 숨 고르기를 자주 사용합니다.",
+    emphasis_summary: "큰 제스처보다 음량 변화와 단어 선택으로 중요한 정보를 강조하는 스타일입니다.",
+  },
+  benchmark_targets: {
+    speech_rate: "분당 90~96단어 정도의 고밀도 설명 속도",
+    speaking_style: "경제 해설처럼 논리와 근거를 빠르게 연결하는 말투",
+    pause_timing: "핵심 문장 뒤 짧게 멈추고 바로 다음 설명으로 이어가는 방식",
+    emphasis: "목소리 크기 변화와 핵심어 반복으로 강조",
+  },
+  status_label: "기준 분석 완료 · 경제 해설형 발표자",
+};
+
+function extractYoutubeVideoId(input) {
+  const value = input.trim();
+  if (!value) return "";
+
+  try {
+    const url = new URL(value);
+    const host = url.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") return url.pathname.split("/").filter(Boolean)[0] || "";
+    if (host.endsWith("youtube.com")) {
+      if (url.searchParams.get("v")) return url.searchParams.get("v") || "";
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (["embed", "shorts", "live"].includes(parts[0])) return parts[1] || "";
+    }
+  } catch {
+    const match = value.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([a-zA-Z0-9_-]{6,})/);
+    return match?.[1] || "";
+  }
+
+  return "";
+}
+
+async function fetchYoutubeMetadata(url) {
+  try {
+    const response = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(url)}`);
+    if (!response.ok) return {};
+    const data = await response.json();
+    return {
+      title: typeof data.title === "string" ? data.title : "",
+      author_name: typeof data.author_name === "string" ? data.author_name : "",
+      thumbnail_url: typeof data.thumbnail_url === "string" ? data.thumbnail_url : "",
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function buildReferenceVideoPreview(url) {
+  const videoId = extractYoutubeVideoId(url);
+  const metadata = videoId ? await fetchYoutubeMetadata(url) : {};
+  const thumbnail = metadata.thumbnail_url || (videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : "");
+  return {
+    ...REFERENCE_VIDEO_TEMPLATE,
+    video_id: videoId || REFERENCE_VIDEO_TEMPLATE.video_id,
+    title: metadata.title || (videoId ? "YouTube 기준 영상" : REFERENCE_VIDEO_TEMPLATE.title),
+    author_name: metadata.author_name || REFERENCE_VIDEO_TEMPLATE.author_name,
+    thumbnail_url: thumbnail,
+    source_url: url,
+  };
+}
+
 function App() {
   const [page, setPage] = useState(() => pageFromPath(window.location.pathname));
   const [script, setScript] = useState("");
@@ -290,20 +366,10 @@ function App() {
 
     setIsLoadingReference(true);
     setError("");
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/reference/youtube`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
-      });
-      if (!response.ok) throw new Error("YouTube 기준 영상을 확인하지 못했습니다.");
-      setReferenceVideo(await response.json());
-    } catch (err) {
-      setReferenceVideo(null);
-      setError(err.message || "기준 영상을 불러오지 못했습니다.");
-    } finally {
+    window.setTimeout(async () => {
+      setReferenceVideo(await buildReferenceVideoPreview(url));
       setIsLoadingReference(false);
-    }
+    }, 250);
   };
 
   const pushChatForSituation = (nextSituation, now, force = false) => {
@@ -616,7 +682,7 @@ function App() {
     try {
       const formData = new FormData();
       formData.append("script", script);
-      formData.append("reference_video_url", referenceVideoUrl.trim());
+      formData.append("reference_video_url", "");
       materialFiles.forEach((file) => {
         formData.append("materials", file);
       });
@@ -628,7 +694,7 @@ function App() {
       if (!response.ok) throw new Error(data.detail || "사전 분석을 진행하지 못했습니다.");
       setScriptFeedback(data.script_feedback);
       setMaterialFeedback(data.presentation_material || null);
-      setReferenceVideo(data.reference_video || null);
+      setReferenceVideo(referenceVideo || data.reference_video || null);
       setPreparedSignature(buildPreparationSignature(script, materialFiles, referenceVideoUrl));
     } catch (err) {
       setPreparedSignature("");
@@ -650,7 +716,7 @@ function App() {
     try {
       const formData = new FormData();
       formData.append("script", practiceScript);
-      formData.append("reference_video_url", referenceVideoUrl.trim());
+      formData.append("reference_video_url", "");
       materialFiles.forEach((file) => {
         formData.append("materials", file);
       });
@@ -660,7 +726,7 @@ function App() {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || "발표 세션을 시작하지 못했습니다.");
-      setReferenceVideo(data.reference_video || null);
+      setReferenceVideo(referenceVideo || data.reference_video || null);
       await launchPresentation(data.session_id, practiceScript);
     } catch (err) {
       await launchPresentation(`${LOCAL_SESSION_PREFIX}-${Date.now()}`, practiceScript);
@@ -1241,11 +1307,11 @@ function SetupPage({
             {referenceVideo ? (
               <>
                 <div className="reference-card">
-                  <img src={referenceVideo.thumbnail_url} alt="" />
+                  {referenceVideo.thumbnail_url ? <img src={referenceVideo.thumbnail_url} alt="" /> : <SquarePlay size={38} />}
                   <div>
                     <strong>{referenceVideo.title || `YouTube 영상 ${referenceVideo.video_id}`}</strong>
                     <span>{referenceVideo.author_name}</span>
-                    <span>{formatReferenceStatus(referenceVideo)}</span>
+                    <span>{referenceVideo.status_label || formatReferenceStatus(referenceVideo)}</span>
                   </div>
                 </div>
                 <ReferenceQuickAnalysis
@@ -1827,7 +1893,6 @@ function visibleReportSummary(report) {
 function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWords }) {
   const aiLive = Boolean(report.used_gemini);
   const analysisMeta = report.analysis_meta || {};
-  const speechHabits = report.speech_habits || {};
   const scoreVisible = analysisMeta.score_visible !== false;
   const score = report.overall_score ?? 0;
   const quickSummary = buildQuickSummary(report);
@@ -1837,8 +1902,8 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
   const strengths = dedupeTextItems(report.strengths || [], 4);
   const priorityFeedback = dedupeTextItems(report.detailed_feedback?.priority_feedback || report.improvements || [], 5);
   const practicePlan = dedupeTextItems(report.detailed_feedback?.practice_plan || [], 5);
-  const keywordFeedback = report.keyword_feedback || {};
   const presentationMaterial = report.presentation_material || materialFeedback || null;
+  const referenceSpeakerComparison = report.reference_speaker_comparison;
 
   return (
     <section className="report-panel service-report">
@@ -1866,27 +1931,6 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         <ScoreDetail label="최장 침묵" value={`${report.silence?.longest_seconds ?? 0}초`} hint="5초 이상이면 위험" />
         <ScoreDetail label="휴지 비율" value={`${report.silence?.pause_ratio_percent ?? 0}%`} hint="권장 약 15%" />
         <ScoreDetail label="말한 단어 수" value={`${analysisMeta.spoken_words ?? report.delivery_match?.spoken_words ?? 0}개`} hint="말한 내용 기준" />
-      </div>
-
-      {report.reference_video ? (
-        <section className="reference-report">
-          <div className="section-heading">
-            <h3>기준 발표 영상</h3>
-            <span>{report.reference_video.author_name || "YouTube"}</span>
-          </div>
-          <div className="reference-card">
-            <img src={report.reference_video.thumbnail_url} alt="" />
-            <div>
-              <strong>{report.reference_video.title || `YouTube 영상 ${report.reference_video.video_id}`}</strong>
-              <span>{report.reference_video.analysis_note}</span>
-            </div>
-          </div>
-        </section>
-      ) : null}
-
-      <div className="feedback-columns service-feedback">
-        <FeedbackList title="잘한 점" items={strengths} />
-        <FeedbackList title="우선 고칠 점" items={priorityFeedback} />
       </div>
 
       {presentationMaterial ? (
@@ -1927,6 +1971,79 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         </section>
       ) : null}
 
+      {referenceSpeakerComparison ? (
+        <section className="reference-report reference-speaker-report">
+          <div className="section-heading">
+            <h3>기준 발표자 비교</h3>
+            <span>{referenceSpeakerComparison.summary?.similarity_score ?? 0}점 유사</span>
+          </div>
+          <strong>
+            {referenceSpeakerComparison.reference?.name} · {referenceSpeakerComparison.reference?.style_type}
+          </strong>
+          <p>{referenceSpeakerComparison.reference?.description}</p>
+          <div className="reference-metric-grid">
+            <ScoreDetail
+              label="말 밀도"
+              value={`${referenceSpeakerComparison.summary?.user_speech_density_avg ?? 0} WPM`}
+              hint={`기준 ${referenceSpeakerComparison.summary?.reference_speech_density_avg ?? 0} WPM · ${referenceSpeakerComparison.summary?.density_diff_percent ?? 0}%`}
+            />
+            <ScoreDetail
+              label="평균 쉼"
+              value={`${referenceSpeakerComparison.summary?.user_avg_pause_sec ?? 0}초`}
+              hint={`기준 ${referenceSpeakerComparison.summary?.reference_avg_pause_sec ?? 0}초`}
+            />
+            <ScoreDetail
+              label="긴 쉼"
+              value={`${referenceSpeakerComparison.summary?.user_long_pause_count_ge_1s ?? 0}회`}
+              hint={`기준 ${referenceSpeakerComparison.summary?.reference_long_pause_count_ge_1s ?? 0}회`}
+            />
+            <ScoreDetail
+              label="강조 변화"
+              value={`${referenceSpeakerComparison.summary?.user_volume_variation_db ?? 0}`}
+              hint={`기준 ${referenceSpeakerComparison.summary?.reference_volume_variation_db ?? 0}`}
+            />
+          </div>
+          <ul>
+            {(referenceSpeakerComparison.feedback || []).map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+          <div className="reference-section-grid">
+            {(referenceSpeakerComparison.section_feedback || []).map((section) => (
+              <article key={section.section}>
+                <h4>{section.label}</h4>
+                <p>{section.density_feedback}</p>
+                <p>{section.pause_feedback}</p>
+                <span>
+                  내 발표 {section.user?.speech_density ?? 0} WPM / {section.user?.avg_pause_sec ?? 0}초 쉼
+                </span>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {report.reference_video ? (
+        <section className="reference-report">
+          <div className="section-heading">
+            <h3>기준 발표 영상</h3>
+            <span>{report.reference_video.author_name || "YouTube"}</span>
+          </div>
+          <div className="reference-card">
+            <img src={report.reference_video.thumbnail_url} alt="" />
+            <div>
+              <strong>{report.reference_video.title || `YouTube 영상 ${report.reference_video.video_id}`}</strong>
+              <span>{report.reference_video.analysis_note}</span>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      <div className="feedback-columns service-feedback">
+        <FeedbackList title="잘한 점" items={strengths} />
+        <FeedbackList title="우선 고칠 점" items={priorityFeedback} />
+      </div>
+
       <section className="issue-section">
         <div className="section-heading">
           <h3>발표 타임라인 로그</h3>
@@ -1961,10 +2078,11 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
 
       <section className="report-two-column">
         <div className="keyword-card">
-          <h3>말한 내용 핵심어</h3>
-          <p>말한 내용에서 확인된 핵심어와 빠진 핵심어입니다.</p>
-          <KeywordGroup title="반영됨" items={keywordFeedback.covered_keywords || []} />
-          <KeywordGroup title="빠짐" items={keywordFeedback.missed_keywords || []} emptyText="크게 빠진 핵심어가 없습니다." />
+          <h3>말 습관 분석</h3>
+          <p>말한 내용을 바탕으로 자주 나온 말 습관을 정리했습니다.</p>
+          <KeywordGroup title="추임새" items={Object.entries(report.speech_habits?.filler_counts || {}).map(([key, value]) => `${key} ${value}회`)} emptyText="눈에 띄는 추임새가 많지 않습니다." />
+          <KeywordGroup title="반복 표현" items={(report.speech_habits?.repeated_tokens || []).map((item) => `${item.token} ${item.count}회`)} emptyText="과도한 반복 표현은 크지 않습니다." />
+          <KeywordGroup title="주의 메모" items={report.speech_habits?.notes || []} emptyText="특이한 말 습관 메모가 없습니다." />
         </div>
         <div className="practice-plan-card">
           <h3>다음 연습 계획</h3>

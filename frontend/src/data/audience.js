@@ -2,7 +2,6 @@ export const audience = [
   {
     name: "민서",
     role: "공감형 청중",
-    color: "coral",
     skin: ["#ffd9c2", "#f2b392"],
     hair: ["#704b3d", "#3d2924"],
     shirt: ["#9dbdfb", "#688ee5"],
@@ -13,7 +12,6 @@ export const audience = [
   {
     name: "준",
     role: "분석형 청중",
-    color: "mint",
     skin: ["#f3c9aa", "#d99c79"],
     hair: ["#2b2c34", "#141519"],
     shirt: ["#a393ec", "#7766cb"],
@@ -25,7 +23,6 @@ export const audience = [
   {
     name: "하린",
     role: "표현형 청중",
-    color: "yellow",
     skin: ["#ffd7c5", "#f0ae90"],
     hair: ["#bc625c", "#783537"],
     shirt: ["#ffa7c8", "#df7199"],
@@ -36,7 +33,6 @@ export const audience = [
   {
     name: "도윤",
     role: "차분형 청중",
-    color: "blue",
     skin: ["#efc6a6", "#d39774"],
     hair: ["#7b5540", "#493128"],
     shirt: ["#83d7b1", "#50a77d"],

@@ -1126,27 +1126,28 @@ function ReportPage({ aiStatus, error, report, reset, materialFeedback, scriptFe
 
 function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWords }) {
   const aiLive = Boolean(report.used_gemini);
+  const analysisMeta = report.analysis_meta || {};
+  const speechHabits = report.speech_habits || {};
+  const scoreVisible = analysisMeta.score_visible !== false;
   const score = report.overall_score ?? 0;
   const quickSummary = buildQuickSummary(report);
   const issueLog = report.issue_log || [];
   const timelineLog = report.timeline_log || [];
   const priorityFeedback = report.detailed_feedback?.priority_feedback || report.improvements || [];
   const practicePlan = report.detailed_feedback?.practice_plan || [];
-  const keywordFeedback = report.keyword_feedback || {};
-  const presentationMaterial = report.presentation_material || materialFeedback || null;
 
   return (
     <section className="report-panel service-report">
       <div className="report-summary-card">
         <div>
-          <p className="eyebrow">{aiLive ? "AI Coaching" : "Basic Coaching"}</p>
-          <h2>{score >= 80 ? "전달력이 좋은 발표였어요" : score >= 60 ? "조금만 다듬으면 더 좋아져요" : "발표 흐름을 다시 잡아보세요"}</h2>
+          <p className="eyebrow">{aiLive ? "AI Coaching" : "Basic Coaching"} · {analysisMeta.summary_label || "정식 결과"}</p>
+          <h2>{!scoreVisible ? "말한 내용이 더 쌓이면 더 정확하게 볼 수 있어요" : score >= 80 ? "전달력이 좋은 발표였어요" : score >= 60 ? "조금만 다듬으면 더 좋아져요" : "발표 흐름을 다시 잡아보세요"}</h2>
           <p>{quickSummary}</p>
           <p className="report-summary-detail">{report.summary}</p>
         </div>
         <div className="service-score">
-          <strong>{score}</strong>
-          <span>점</span>
+          <strong>{scoreVisible ? score : "-"}</strong>
+          <span>{scoreVisible ? "점" : "예비"}</span>
         </div>
       </div>
 
@@ -1160,46 +1161,8 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         <ScoreDetail label="평균 속도" value={`${report.pace?.syllables_per_second ?? 0} 음절/초`} hint="목표 5.6-6.3" />
         <ScoreDetail label="최장 침묵" value={`${report.silence?.longest_seconds ?? 0}초`} hint="5초 이상이면 위험" />
         <ScoreDetail label="휴지 비율" value={`${report.silence?.pause_ratio_percent ?? 0}%`} hint="권장 약 15%" />
-        <ScoreDetail label="키워드 반영" value={`${keywordFeedback.coverage_percent ?? report.delivery_match?.similarity_percent ?? 0}%`} hint="대본 핵심어 기준" />
+        <ScoreDetail label="말한 단어 수" value={`${analysisMeta.spoken_words ?? report.delivery_match?.spoken_words ?? 0}개`} hint="말한 내용 기준" />
       </div>
-
-      {presentationMaterial ? (
-        <section className="material-analysis-card">
-          <div className="section-heading">
-            <h3>발표 자료 분석</h3>
-            <span>{presentationMaterial.overall_score ?? 0}점</span>
-          </div>
-          <div className="detail-score-grid material-grid">
-            <ScoreDetail label="예상 발표 시간" value={`${presentationMaterial.estimated_minutes ?? 0}분`} hint="대본과 자료를 함께 기준으로 계산합니다." />
-            <ScoreDetail label="시인성" value={`${presentationMaterial.clarity_score ?? 0}/100`} hint="글자 크기와 밀도를 봅니다." />
-            <ScoreDetail label="통일성" value={`${presentationMaterial.consistency_score ?? 0}/100`} hint="슬라이드 간 표현 흐름을 봅니다." />
-            <ScoreDetail label="주제 적합도" value={`${presentationMaterial.topic_fit_score ?? 0}/100`} hint="대본과 자료의 핵심 주제가 얼마나 맞는지 봅니다." />
-          </div>
-          <p className="material-summary">{presentationMaterial.summary}</p>
-          {presentationMaterial.notes?.length ? (
-            <ul className="material-notes">
-              {presentationMaterial.notes.map((note) => (
-                <li key={note}>{note}</li>
-              ))}
-            </ul>
-          ) : null}
-          {presentationMaterial.files?.length ? (
-            <div className="material-file-cards">
-              {presentationMaterial.files.map((file) => (
-                <article className="material-file-card" key={file.filename}>
-                  <strong>{file.filename}</strong>
-                  <p>{file.summary || "업로드한 발표 자료 분석을 완료했습니다."}</p>
-                  <div className="material-file-meta">
-                    <span>{String(file.kind || "file").toUpperCase()}</span>
-                    <span>{file.page_count || file.slide_count || 0}장</span>
-                    <span>{file.overall_score ?? 0}/100</span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : null}
-        </section>
-      ) : null}
 
       {report.reference_video ? (
         <section className="reference-report">
@@ -1256,10 +1219,11 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
 
       <section className="report-two-column">
         <div className="keyword-card">
-          <h3>대본 핵심어 반영</h3>
-          <p>말한 내용에서 확인된 핵심어와 빠진 핵심어입니다.</p>
-          <KeywordGroup title="반영됨" items={keywordFeedback.covered_keywords || []} />
-          <KeywordGroup title="빠짐" items={keywordFeedback.missed_keywords || []} emptyText="크게 빠진 핵심어가 없습니다." />
+          <h3>말 습관 분석</h3>
+          <p>말한 내용을 바탕으로 자주 나온 말 습관을 정리했습니다.</p>
+          <KeywordGroup title="추임새" items={Object.entries(speechHabits.filler_counts || {}).map(([key, value]) => `${key} ${value}회`)} emptyText="눈에 띄는 추임새가 많지 않습니다." />
+          <KeywordGroup title="반복 표현" items={(speechHabits.repeated_tokens || []).map((item) => `${item.token} ${item.count}회`)} emptyText="과도한 반복 표현은 크지 않습니다." />
+          <KeywordGroup title="주의 메모" items={speechHabits.notes || []} emptyText="특이한 말 습관 메모가 없습니다." />
         </div>
         <div className="practice-plan-card">
           <h3>다음 연습 계획</h3>
@@ -1385,17 +1349,20 @@ function userReportSilence(report) {
 }
 
 function userReportDelivery(report) {
-  const match = report.delivery_match?.similarity_percent ?? 0;
-  if (match >= 70) return "잘 맞음";
-  if (match >= 40) return "핵심 유지";
-  return "더 맞추기";
+  const level = report.analysis_meta?.level || "full";
+  const words = report.delivery_match?.spoken_words ?? 0;
+  if (level === "insufficient") return "기록이 적음";
+  if (level === "preliminary") return "간단 점검";
+  if (words >= 120) return "충분함";
+  if (words >= 60) return "보통";
+  return "조금 더 말하기";
 }
 
 function buildQuickSummary(report) {
   const pace = userReportPace(report);
   const silence = userReportSilence(report);
   const delivery = userReportDelivery(report);
-  return `속도는 ${pace}, 침묵은 ${silence} 수준이고 대본 전달은 ${delivery} 상태입니다.`;
+  return `속도는 ${pace}, 침묵은 ${silence} 수준이고 말한 내용의 양은 ${delivery} 상태입니다.`;
 }
 
 export default App;

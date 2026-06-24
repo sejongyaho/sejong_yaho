@@ -1019,163 +1019,6 @@ textarea::placeholder {
   background: rgba(250, 249, 245, 0.72);
 }
 
-.avatar {
-  position: relative;
-  width: clamp(82px, 10vw, 118px);
-  height: clamp(82px, 10vw, 118px);
-  border: 2px solid rgba(20, 23, 15, 0.62);
-  border-radius: 44% 56% 50% 50%;
-  background: #e1dcc2;
-  transform: translateY(calc(var(--bob, 0px) * -1));
-  transition: transform 120ms ease;
-}
-
-.avatar.coral {
-  background: #e9b29a;
-}
-
-.avatar.mint {
-  background: #c6d5b6;
-}
-
-.avatar.yellow {
-  background: #e9dc98;
-}
-
-.avatar.blue {
-  background: #bec4da;
-}
-
-.ear {
-  position: absolute;
-  top: 42%;
-  width: 13px;
-  height: 21px;
-  border: 2px solid rgba(20, 23, 15, 0.55);
-  border-radius: 999px;
-  background: inherit;
-}
-
-.ear.left {
-  left: -9px;
-}
-
-.ear.right {
-  right: -9px;
-}
-
-.face {
-  position: absolute;
-  inset: 0;
-}
-
-.eye {
-  position: absolute;
-  top: 42%;
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-  background: var(--ink);
-}
-
-.eye.left {
-  left: 31%;
-}
-
-.eye.right {
-  right: 31%;
-}
-
-.mouth {
-  position: absolute;
-  left: 50%;
-  bottom: 31%;
-  width: 24px;
-  height: 10px;
-  border-bottom: 3px solid var(--ink);
-  border-radius: 0 0 999px 999px;
-  transform: translateX(-50%);
-}
-
-.avatar.sleepy .eye {
-  height: 3px;
-  border-radius: 999px;
-}
-
-.avatar.confused .mouth,
-.avatar.tooFast .mouth {
-  width: 18px;
-  height: 3px;
-  border-bottom-width: 3px;
-}
-
-.avatar.excited .mouth {
-  height: 15px;
-}
-
-.cheek {
-  position: absolute;
-  top: 55%;
-  width: 11px;
-  height: 6px;
-  border-radius: 999px;
-  background: rgba(184, 111, 77, 0.28);
-}
-
-.cheek.left {
-  left: 20%;
-}
-
-.cheek.right {
-  right: 20%;
-}
-
-.accessory {
-  position: absolute;
-  z-index: 2;
-}
-
-.accessory.clip {
-  top: 10px;
-  right: 24px;
-  width: 18px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--clay);
-  transform: rotate(-22deg);
-}
-
-.accessory.glasses {
-  left: 25px;
-  top: 44px;
-  width: 66px;
-  height: 17px;
-  border: 2px solid var(--ink);
-  border-left-width: 15px;
-  border-right-width: 15px;
-  border-radius: 999px;
-}
-
-.accessory.bow {
-  left: 50%;
-  top: 3px;
-  width: 34px;
-  height: 17px;
-  border-radius: 999px 999px 4px 4px;
-  background: var(--plum);
-  transform: translateX(-50%);
-}
-
-.accessory.headset {
-  left: 12px;
-  top: 17px;
-  width: 94px;
-  height: 70px;
-  border: 4px solid var(--ink);
-  border-bottom: 0;
-  border-radius: 999px 999px 0 0;
-}
-
 .audience-info {
   display: flex;
   align-items: center;
@@ -1537,10 +1380,27 @@ textarea::placeholder {
     #fffdf5;
 }
 
-.loading-banner {
+.report-loading-card {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.report-loading-card strong,
+.report-loading-card p {
+  margin: 0;
+}
+
+.report-loading-card p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
 }
 
 .report-header {
@@ -1824,6 +1684,13 @@ textarea::placeholder {
   display: grid;
   gap: 10px;
   margin-top: 14px;
+}
+
+.issue-empty {
+  margin: 14px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 
 .issue-item {

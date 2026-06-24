@@ -21,6 +21,27 @@ import {
 } from "./utils/presentation";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+const SETUP_STORAGE_KEY = "presentation.setup.v1";
+
+function loadStoredSetup() {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(SETUP_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredSetup(payload) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(SETUP_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function clearStoredSetup() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(SETUP_STORAGE_KEY);
+}
 
 function pageFromPath(pathname) {
   if (pathname === "/pre-feedback" || pathname === "/feedback/pre") return "preFeedback";
@@ -89,6 +110,7 @@ function App() {
   const lastChatKeyRef = useRef("");
   const lastChatAtRef = useRef(0);
   const transcriptScrollRef = useRef(null);
+  const setupRestoredRef = useRef(false);
   const metricsRef = useRef({
     elapsed: 0,
     transcript: "",
@@ -110,6 +132,31 @@ function App() {
   );
   const overlap = useMemo(() => scriptOverlap(script, liveTranscript), [script, liveTranscript]);
   const spokenWords = useMemo(() => tokenCount(liveTranscript), [liveTranscript]);
+
+  useEffect(() => {
+    const stored = loadStoredSetup();
+    if (stored) {
+      setScript(stored.script || "");
+      setReferenceVideoUrl(stored.referenceVideoUrl || "");
+      setScriptFeedback(stored.scriptFeedback || null);
+      setMaterialFeedback(stored.materialFeedback || null);
+      setReferenceVideo(stored.referenceVideo || null);
+      setPreparedSignature(stored.preparedSignature || "");
+    }
+    setupRestoredRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!setupRestoredRef.current) return;
+    saveStoredSetup({
+      script,
+      referenceVideoUrl,
+      scriptFeedback,
+      materialFeedback,
+      referenceVideo,
+      preparedSignature,
+    });
+  }, [script, referenceVideoUrl, scriptFeedback, materialFeedback, referenceVideo, preparedSignature]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -657,6 +704,9 @@ function App() {
     setIsFinishing(true);
     setIsPresenting(false);
     isPresentingRef.current = false;
+    setError("");
+    setReport(null);
+    setPage("report");
     const finalTranscript = `${transcriptRef.current} ${interimRef.current || lastInterimRef.current}`.trim();
     cleanupRecording();
     try {
@@ -669,7 +719,6 @@ function App() {
       if (!response.ok) throw new Error("리포트를 만들지 못했습니다.");
       setReport(await response.json());
       refreshAiStatus();
-      setPage("report");
     } catch (err) {
       setError(err.message || "종료 중 문제가 생겼습니다.");
     } finally {
@@ -706,6 +755,7 @@ function App() {
     setReferenceVideo(null);
     setReferenceVideoUrl("");
     setPreparedSignature("");
+    clearStoredSetup();
     resetRealtimeRefs();
   };
 
@@ -836,6 +886,7 @@ function App() {
           <ReportPage
             aiStatus={aiStatus}
             error={error}
+            isFinishing={isFinishing}
             report={report}
             reset={reset}
             materialFeedback={materialFeedback}
@@ -1093,7 +1144,7 @@ function SetupPage({
   );
 }
 
-function ReportPage({ aiStatus, error, report, reset, materialFeedback, scriptFeedback, spokenWords }) {
+function ReportPage({ aiStatus, error, isFinishing, report, reset, materialFeedback, scriptFeedback, spokenWords }) {
   return (
     <>
       <header className="product-header compact">
@@ -1108,18 +1159,103 @@ function ReportPage({ aiStatus, error, report, reset, materialFeedback, scriptFe
       </header>
 
       {error && <div className="notice">{error}</div>}
+      {isFinishing && !report ? (
+        <section className="report-loading-card">
+          <Loader2 className="spin" size={22} />
+          <div>
+            <strong>리포트를 정리하고 있어요</strong>
+            <p>방금 연습한 발화와 대본 반영도를 분석해 결과를 만들고 있습니다.</p>
+          </div>
+        </section>
+      ) : null}
       {report ? <Report aiStatus={aiStatus} report={report} materialFeedback={materialFeedback} scriptFeedback={scriptFeedback} spokenWords={spokenWords} /> : null}
     </>
   );
+}
+
+const HIDDEN_REPORT_MARKERS = ["신지영", "운율 중심", "연구를 반영", "criteria_basis", "rubric", "내부 기준"];
+
+const FEEDBACK_TOPICS = {
+  rhythm: ["리듬", "구간별", "변동", "일정"],
+  pace: ["속도", "말속도", "빠른", "빨라", "느린", "느려", "음절", "wpm"],
+  pause: ["침묵", "휴지", "멈춤", "쉬는", "쉼", "공백", "복구"],
+  script: ["대본", "핵심어", "키워드", "메시지", "반영"],
+  material: ["자료", "슬라이드", "시인성", "발표자료"],
+  ending: ["마무리", "결론", "감사"],
+};
+
+function cleanVisibleText(value) {
+  return String(value || "")
+    .replace("논문에서 전달력 높은 말하기로 제시된 보통 발화 속도(초당 약 6음절)에 가깝습니다.", "말 속도가 안정적이라 핵심 내용이 따라가기 좋습니다.")
+    .replace("전체 발화 중 휴지 비율이 논문에서 제시한 전달력 높은 말하기의 범위에 가깝습니다.", "쉬는 타이밍이 과하지 않아 발표 흐름이 안정적입니다.")
+    .replace("휴지 비율이 25% 이상이면 전달력이 떨어질 수 있습니다.", "쉬는 시간이 길어 흐름이 끊겨 보일 수 있습니다.")
+    .replaceAll("논문에서 제시한 전달력 높은 말하기의 ", "")
+    .replaceAll("논문에서 전달력 높은 말하기로 제시된 ", "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function feedbackTopicKey(item) {
+  const text = cleanVisibleText(item).toLowerCase();
+  const found = Object.entries(FEEDBACK_TOPICS).find(([, keywords]) => keywords.some((keyword) => text.includes(keyword.toLowerCase())));
+  return found ? found[0] : text.slice(0, 32);
+}
+
+function dedupeTextItems(items = [], limit = Infinity) {
+  const seenTopics = new Set();
+  const seenTexts = new Set();
+  const result = [];
+  items.forEach((item) => {
+    const text = cleanVisibleText(item);
+    const exactKey = text.replace(/\s+/g, "");
+    const topicKey = feedbackTopicKey(text);
+    if (!text || seenTexts.has(exactKey) || seenTopics.has(topicKey) || result.length >= limit) return;
+    seenTexts.add(exactKey);
+    seenTopics.add(topicKey);
+    result.push(text);
+  });
+  return result;
+}
+
+function dedupeIssues(issues = [], limit = Infinity) {
+  const seenTypes = new Set();
+  const result = [];
+  issues.forEach((issue) => {
+    const typeKey = issue.type || issue.title;
+    if (!typeKey || seenTypes.has(typeKey) || result.length >= limit) return;
+    seenTypes.add(typeKey);
+    result.push({
+      ...issue,
+      title: cleanVisibleText(issue.title),
+      evidence: cleanVisibleText(issue.evidence),
+      spoken_excerpt: cleanVisibleText(issue.spoken_excerpt),
+      suggestion: cleanVisibleText(issue.suggestion),
+    });
+  });
+  return result;
+}
+
+function visibleReportSummary(report) {
+  const summary = cleanVisibleText(report.summary);
+  if (!summary || HIDDEN_REPORT_MARKERS.some((marker) => summary.includes(marker))) {
+    const score = report.overall_score ?? 0;
+    if (score >= 80) return "전체 흐름은 안정적입니다. 다음 연습에서는 강조와 마무리만 조금 더 선명하게 다듬어 보세요.";
+    if (score >= 60) return "발표의 큰 흐름은 잡혀 있습니다. 속도, 쉬는 타이밍, 핵심어 전달을 조금 더 정리하면 훨씬 또렷해집니다.";
+    return "이번 연습에서는 흐름을 먼저 안정시키는 것이 좋습니다. 긴 침묵과 핵심어 전달을 우선 다듬어 보세요.";
+  }
+  return summary;
 }
 
 function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWords }) {
   const aiLive = Boolean(report.used_gemini);
   const score = report.overall_score ?? 0;
   const quickSummary = buildQuickSummary(report);
-  const issueLog = report.issue_log || [];
-  const priorityFeedback = report.detailed_feedback?.priority_feedback || report.improvements || [];
-  const practicePlan = report.detailed_feedback?.practice_plan || [];
+  const reportSummary = visibleReportSummary(report);
+  const issueLog = dedupeIssues(report.issue_log || [], 6);
+  const timelineLog = report.timeline_log || [];
+  const strengths = dedupeTextItems(report.strengths || [], 4);
+  const priorityFeedback = dedupeTextItems(report.detailed_feedback?.priority_feedback || report.improvements || [], 5);
+  const practicePlan = dedupeTextItems(report.detailed_feedback?.practice_plan || [], 5);
   const keywordFeedback = report.keyword_feedback || {};
   const presentationMaterial = report.presentation_material || materialFeedback || null;
 
@@ -1130,7 +1266,7 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
           <p className="eyebrow">{aiLive ? "AI Coaching" : "Basic Coaching"}</p>
           <h2>{score >= 80 ? "전달력이 좋은 발표였어요" : score >= 60 ? "조금만 다듬으면 더 좋아져요" : "발표 흐름을 다시 잡아보세요"}</h2>
           <p>{quickSummary}</p>
-          <p className="report-summary-detail">{report.summary}</p>
+          <p className="report-summary-detail">{reportSummary}</p>
         </div>
         <div className="service-score">
           <strong>{score}</strong>
@@ -1206,20 +1342,40 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
       ) : null}
 
       <div className="feedback-columns service-feedback">
-        <FeedbackList title="잘한 점" items={(report.strengths || []).slice(0, 4)} />
-        <FeedbackList title="우선 고칠 점" items={priorityFeedback.slice(0, 5)} />
+        <FeedbackList title="잘한 점" items={strengths} />
+        <FeedbackList title="우선 고칠 점" items={priorityFeedback} />
       </div>
+
+      <section className="issue-section">
+        <div className="section-heading">
+          <h3>발표 타임라인 로그</h3>
+          <span>{timelineLog.length}개 구간</span>
+        </div>
+        {timelineLog.length ? (
+          <div className="issue-list">
+            {timelineLog.map((issue) => (
+              <IssueItem key={`${issue.time}-${issue.type}-${issue.title}`} issue={issue} />
+            ))}
+          </div>
+        ) : (
+          <p className="issue-empty">아직 전체 타임라인 로그가 생성되지 않았습니다. 이 영역은 발표 전체 구간 로그만 표시합니다.</p>
+        )}
+      </section>
 
       <section className="issue-section">
         <div className="section-heading">
           <h3>문제 구간 로그</h3>
           <span>{issueLog.length}개 구간</span>
         </div>
-        <div className="issue-list">
-          {issueLog.map((issue) => (
-            <IssueItem key={`${issue.time}-${issue.type}-${issue.title}`} issue={issue} />
-          ))}
-        </div>
+        {issueLog.length ? (
+          <div className="issue-list">
+            {issueLog.map((issue) => (
+              <IssueItem key={`${issue.time}-${issue.type}-${issue.title}-issue`} issue={issue} />
+            ))}
+          </div>
+        ) : (
+          <p className="issue-empty">눈에 띄는 경고 구간은 따로 잡히지 않았습니다.</p>
+        )}
       </section>
 
       <section className="report-two-column">

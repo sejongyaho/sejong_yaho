@@ -223,7 +223,7 @@ function AudienceAvatar({ person, mood, index }) {
 function AudienceTile({ person, reaction, active, volume, index }) {
   const mood = visualMood(reaction);
   return (
-    <article className={`audience-tile ${person.color} mood-${mood} ${active ? "active" : ""}`} data-reaction={mood}>
+    <article className={`audience-tile mood-${mood} ${active ? "active" : ""}`} data-reaction={mood}>
       <div className="avatarbox" style={{ "--bob": `${Math.min(volume * 30, 1.6)}px` }}>
         <AudienceAvatar person={person} mood={mood} index={index} />
         <span className="floor-shadow" />
@@ -288,12 +288,6 @@ export default function PracticePage({
       </header>
 
       {error && <div className="notice">{error}</div>}
-      {isFinishing ? (
-        <div className="notice loading-banner">
-          <Loader2 className="spin" size={16} />
-          <span>발표 정리 중입니다. 녹음본과 대본, 발표 자료를 분석하고 있어요. 잠시만 기다려 주세요.</span>
-        </div>
-      ) : null}
 
       <div className="practice-layout">
         <section className="stage-card">

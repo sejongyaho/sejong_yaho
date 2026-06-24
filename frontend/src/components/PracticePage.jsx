@@ -223,7 +223,7 @@ function AudienceAvatar({ person, mood, index }) {
 function AudienceTile({ person, reaction, active, volume, index }) {
   const mood = visualMood(reaction);
   return (
-    <article className={`audience-tile ${person.color} mood-${mood} ${active ? "active" : ""}`} data-reaction={mood}>
+    <article className={`audience-tile mood-${mood} ${active ? "active" : ""}`} data-reaction={mood}>
       <div className="avatarbox" style={{ "--bob": `${Math.min(volume * 30, 1.6)}px` }}>
         <AudienceAvatar person={person} mood={mood} index={index} />
         <span className="floor-shadow" />

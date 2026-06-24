@@ -10,6 +10,7 @@ import {
   Flag,
   Pencil,
   Route,
+  SquarePlay,
   Undo2,
   X,
 } from "lucide-react";
@@ -388,18 +389,36 @@ export function FeedbackActionButtons({ onRewriteScript, onShortenScript, onSugg
   );
 }
 
+export function ReferenceStyleBanner({ selectedReferenceStyle }) {
+  if (!selectedReferenceStyle) return null;
+
+  const speakerName = selectedReferenceStyle.speakerName || "선택한 레퍼런스";
+
+  return (
+    <section className="selected-reference-banner" aria-label="적용된 레퍼런스 스타일">
+      <SquarePlay size={18} />
+      <div>
+        <strong>{speakerName} 발표 스타일이 피드백 기준으로 설정되었습니다.</strong>
+        <p>말하기 속도, 쉬는 타이밍, 강조 방식을 이 레퍼런스 기준으로 비교합니다.</p>
+      </div>
+    </section>
+  );
+}
+
 export default function PreFeedbackPage({
   data,
   onRewriteScript,
   onShortenScript,
   onSuggestSlideCopy,
   onStartPractice,
+  selectedReferenceStyle,
   sourceScript,
   topNavigation,
 }) {
   return (
     <>
       {topNavigation}
+      <ReferenceStyleBanner selectedReferenceStyle={selectedReferenceStyle} />
       <ScriptCorrectionWorkspace
         correction={data.correction}
         flow={data.flow}

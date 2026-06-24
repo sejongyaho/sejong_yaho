@@ -42,9 +42,17 @@ import {
   userPaceLabel,
   userSilenceLabel,
 } from "./utils/presentation";
+import {
+  buildSelectedReferenceStyle,
+  loadSelectedReferenceStyle,
+  saveSelectedReferenceStyle,
+} from "./utils/referenceStyle";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 const SETUP_STORAGE_KEY = "presentation.setup.v1";
+const LOCAL_SESSION_PREFIX = "local-practice";
+const DEFAULT_PRACTICE_SCRIPT =
+  "안녕하세요. 오늘은 발표 연습을 시작하겠습니다. 핵심 내용을 또렷하게 전달하고, 중요한 문장 뒤에는 잠깐 멈추며, 마지막에는 결론을 분명하게 정리해 보겠습니다.";
 
 function loadStoredSetup() {
   if (typeof window === "undefined") return null;
@@ -64,6 +72,10 @@ function saveStoredSetup(payload) {
 function clearStoredSetup() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(SETUP_STORAGE_KEY);
+}
+
+function isLocalSession(sessionId) {
+  return String(sessionId || "").startsWith(LOCAL_SESSION_PREFIX);
 }
 
 function pageFromPath(pathname) {
@@ -102,6 +114,7 @@ function App() {
   const [aiStatus, setAiStatus] = useState(null);
   const [referenceVideoUrl, setReferenceVideoUrl] = useState("");
   const [referenceVideo, setReferenceVideo] = useState(null);
+  const [selectedReferenceStyle, setSelectedReferenceStyle] = useState(() => loadSelectedReferenceStyle());
   const [isLoadingReference, setIsLoadingReference] = useState(false);
   const [isPreparing, setIsPreparing] = useState(false);
   const [recognitionStatus, setRecognitionStatus] = useState("대기 중");
@@ -135,6 +148,7 @@ function App() {
   const lastChatAtRef = useRef(0);
   const transcriptScrollRef = useRef(null);
   const setupRestoredRef = useRef(false);
+  const activeScriptRef = useRef("");
   const metricsRef = useRef({
     elapsed: 0,
     transcript: "",
@@ -167,7 +181,10 @@ function App() {
       setReferenceVideo(stored.referenceVideo || null);
       setPreparedSignature(stored.preparedSignature || "");
     }
-    setupRestoredRef.current = true;
+    const restoreTimer = window.setTimeout(() => {
+      setupRestoredRef.current = true;
+    }, 0);
+    return () => window.clearTimeout(restoreTimer);
   }, []);
 
   useEffect(() => {
@@ -490,7 +507,7 @@ function App() {
         silenceStreak: silenceStreakRef.current,
         voiceActive: voiceActiveRef.current,
         secondsSinceRecognized,
-        overlap: scriptOverlap(script, currentTranscript),
+        overlap: scriptOverlap(activeScriptRef.current || script, currentTranscript),
       });
 
       setElapsed(nextElapsed);
@@ -508,7 +525,7 @@ function App() {
 
   const postMetric = async () => {
     const currentSessionId = sessionIdRef.current;
-    if (!currentSessionId) return;
+    if (!currentSessionId || isLocalSession(currentSessionId)) return;
     const current = metricsRef.current;
     await fetch(`${API_BASE_URL}/api/session/${currentSessionId}/metric`, {
       method: "POST",
@@ -543,9 +560,10 @@ function App() {
     streamRef.current = null;
   };
 
-  const launchPresentation = async (nextSessionId) => {
+  const launchPresentation = async (nextSessionId, practiceScript = script) => {
     setSessionId(nextSessionId);
     sessionIdRef.current = nextSessionId;
+    activeScriptRef.current = practiceScript;
     setError("");
     setReport(null);
     setTranscriptSegments([]);
@@ -623,15 +641,15 @@ function App() {
   const startPresentation = async () => {
     setError("");
     setReport(null);
-    if (script.trim().length < 10) {
-      setError("대본을 조금 더 입력해 주세요.");
-      return;
+    const practiceScript = script.trim().length >= 10 ? script : DEFAULT_PRACTICE_SCRIPT;
+    if (practiceScript !== script) {
+      setScript(practiceScript);
     }
 
     setIsStarting(true);
     try {
       const formData = new FormData();
-      formData.append("script", script);
+      formData.append("script", practiceScript);
       formData.append("reference_video_url", referenceVideoUrl.trim());
       materialFiles.forEach((file) => {
         formData.append("materials", file);
@@ -643,12 +661,9 @@ function App() {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || "발표 세션을 시작하지 못했습니다.");
       setReferenceVideo(data.reference_video || null);
-      await launchPresentation(data.session_id);
+      await launchPresentation(data.session_id, practiceScript);
     } catch (err) {
-      cleanupRecording();
-      setSessionId("");
-      sessionIdRef.current = "";
-      setError(err.message || "발표 시작 중 문제가 생겼습니다.");
+      await launchPresentation(`${LOCAL_SESSION_PREFIX}-${Date.now()}`, practiceScript);
     } finally {
       setIsStarting(false);
     }
@@ -732,8 +747,19 @@ function App() {
     setReport(null);
     setPage("report");
     const finalTranscript = `${transcriptRef.current} ${interimRef.current || lastInterimRef.current}`.trim();
+    const reportScript = activeScriptRef.current || script || DEFAULT_PRACTICE_SCRIPT;
     cleanupRecording();
     try {
+      if (isLocalSession(currentSessionId)) {
+        setReport(buildLocalPracticeReport({
+          script: reportScript,
+          transcript: finalTranscript,
+          metrics: metricsRef.current,
+          referenceVideo,
+          selectedReferenceStyle,
+        }));
+        return;
+      }
       await postMetric();
       const response = await fetch(`${API_BASE_URL}/api/session/${currentSessionId}/finish`, {
         method: "POST",
@@ -744,7 +770,14 @@ function App() {
       setReport(await response.json());
       refreshAiStatus();
     } catch (err) {
-      setError(err.message || "종료 중 문제가 생겼습니다.");
+      setReport(buildLocalPracticeReport({
+        script: reportScript,
+        transcript: finalTranscript,
+        metrics: metricsRef.current,
+        referenceVideo,
+        selectedReferenceStyle,
+      }));
+      setError("서버 리포트 대신 기본 분석 리포트를 만들었습니다.");
     } finally {
       setIsFinishing(false);
     }
@@ -805,6 +838,14 @@ function App() {
     window.history.pushState({}, "", "/pre-feedback");
     setIsPresenting(false);
     isPresentingRef.current = false;
+  };
+
+  const selectReferenceStyleForPractice = () => {
+    if (!referenceVideo) return;
+    const nextReferenceStyle = saveSelectedReferenceStyle(buildSelectedReferenceStyle(referenceVideo));
+    setSelectedReferenceStyle(nextReferenceStyle);
+    window.alert("레퍼런스 스타일이 설정되었습니다.");
+    return nextReferenceStyle;
   };
 
   const goToRecords = () => {
@@ -869,6 +910,7 @@ function App() {
             referenceVideoUrl={referenceVideoUrl}
             scriptFeedback={scriptFeedback}
             script={script}
+            selectReferenceStyleForPractice={selectReferenceStyleForPractice}
             sessionPrepared={Boolean(preparedSignature && preparedSignature === buildPreparationSignature(script, materialFiles, referenceVideoUrl))}
             setReferenceVideoUrl={setReferenceVideoUrl}
             setScript={setScript}
@@ -886,6 +928,7 @@ function App() {
             onShortenScript={() => handleDeferredFeedbackAction("shorten-to-three-minutes")}
             onSuggestSlideCopy={() => handleDeferredFeedbackAction("suggest-slide-copy")}
             onStartPractice={startPresentation}
+            selectedReferenceStyle={selectedReferenceStyle}
             sourceScript={script}
             topNavigation={topNavigation}
           />
@@ -964,6 +1007,7 @@ function SetupPage({
   referenceVideoUrl,
   scriptFeedback,
   script,
+  selectReferenceStyleForPractice,
   sessionPrepared,
   setReferenceVideoUrl,
   setScript,
@@ -975,7 +1019,9 @@ function SetupPage({
   const [dragging, setDragging] = useState(false);
   const [shouldScrollToFeedback, setShouldScrollToFeedback] = useState(false);
   const [showReferencePanel, setShowReferencePanel] = useState(false);
+  const [showScriptFeedbackGuide, setShowScriptFeedbackGuide] = useState(false);
   const fileInputRef = useRef(null);
+  const scriptFeedbackButtonRef = useRef(null);
   const preflightRef = useRef(null);
   const referencePanelRef = useRef(null);
   const scriptWords = tokenCount(script);
@@ -988,8 +1034,18 @@ function SetupPage({
   };
 
   const handleScriptFeedback = async () => {
+    setShowScriptFeedbackGuide(false);
     setShouldScrollToFeedback(true);
     await preparePresentation();
+  };
+
+  const handlePracticeWithReferenceStyle = () => {
+    const nextReferenceStyle = selectReferenceStyleForPractice();
+    if (!nextReferenceStyle) return;
+    setShowScriptFeedbackGuide(true);
+    requestAnimationFrame(() => {
+      scriptFeedbackButtonRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
   };
 
   const openReferencePanel = () => {
@@ -1058,7 +1114,13 @@ function SetupPage({
             <strong>대본이나 발표 자료를 여기에 놓으세요</strong>
             <span>대본 파일과 발표 자료 파일을 한 번에 올리면, 대본은 자동으로 읽고 PDF/PPTX는 자료 분석 대상으로 함께 등록합니다.</span>
             <div className="script-drop-actions">
-              <button className="script-feedback-button" type="button" disabled={isPreparing || isStarting} onClick={handleScriptFeedback}>
+              <button
+                ref={scriptFeedbackButtonRef}
+                className={`script-feedback-button ${showScriptFeedbackGuide ? "attention" : ""}`}
+                type="button"
+                disabled={isPreparing || isStarting}
+                onClick={handleScriptFeedback}
+              >
                 {isPreparing ? <Loader2 className="spin" size={17} /> : <BarChart3 size={17} />}
                 {isPreparing ? "분석 중" : "대본 피드백"}
               </button>
@@ -1084,6 +1146,11 @@ function SetupPage({
                   <span key={file.name}>{file.name}</span>
                 ))}
               </div>
+            ) : null}
+            {showScriptFeedbackGuide ? (
+              <p className="script-feedback-guide">
+                레퍼런스 스타일이 기준으로 저장되었습니다. 대본을 입력하고 대본 피드백을 눌러 먼저 수정한 뒤 발표 연습으로 넘어가세요.
+              </p>
             ) : null}
           </div>
         </div>
@@ -1181,7 +1248,10 @@ function SetupPage({
                     <span>{formatReferenceStatus(referenceVideo)}</span>
                   </div>
                 </div>
-                <ReferenceQuickAnalysis referenceVideo={referenceVideo} />
+                <ReferenceQuickAnalysis
+                  referenceVideo={referenceVideo}
+                  onPracticeWithStyle={handlePracticeWithReferenceStyle}
+                />
               </>
             ) : (
               <p>URL을 넣고 분석하면 말하기 속도, 화법, 쉬는 타이밍, 강조 방식을 간단히 보여줍니다.</p>
@@ -1224,6 +1294,107 @@ const capabilityMetrics = [
   { label: "설득력", value: 85 },
   { label: "마무리", value: 89 },
 ];
+
+function buildLocalPracticeReport({ script, transcript, metrics, referenceVideo, selectedReferenceStyle }) {
+  const spokenText = transcript.trim();
+  const spokenWordsCount = tokenCount(spokenText);
+  const scriptWordsCount = tokenCount(script);
+  const elapsedSeconds = Math.max(1, metrics.elapsed || 1);
+  const spokenSyllables = syllableCount(spokenText);
+  const syllablesPerSecond = Number((metrics.syllablesPerSecond || (spokenSyllables / elapsedSeconds) || 0).toFixed(2));
+  const pauseRatioPercent = Math.round((metrics.pauseRatio || 0) * 100);
+  const hasEnoughSpeech = spokenWordsCount >= 12;
+  const referenceProfile = selectedReferenceStyle?.profile;
+
+  return {
+    used_gemini: false,
+    overall_score: hasEnoughSpeech ? 72 : 58,
+    summary: hasEnoughSpeech
+      ? "기본 분석으로 발표 흐름을 점검했습니다. 다음 연습에서는 핵심 문장 뒤 쉬는 타이밍과 강조를 조금 더 선명하게 다듬어 보세요."
+      : "말한 내용이 많지 않아 기본 기준으로 예비 피드백을 만들었습니다. 한 문단 이상 말하면 속도와 침묵을 더 정확히 볼 수 있습니다.",
+    analysis_meta: {
+      level: hasEnoughSpeech ? "preliminary" : "insufficient",
+      summary_label: "기본 분석",
+      score_visible: true,
+      spoken_words: spokenWordsCount,
+      script_words: scriptWordsCount,
+    },
+    pace: {
+      syllables_per_second: syllablesPerSecond,
+      words_per_minute: metrics.wordsPerMinute || 0,
+    },
+    silence: {
+      longest_seconds: metrics.longestSilence || 0,
+      pause_ratio_percent: pauseRatioPercent,
+    },
+    delivery_match: {
+      spoken_words: spokenWordsCount,
+      script_words: scriptWordsCount,
+      overlap_percent: Math.round(scriptOverlap(script, spokenText) * 100),
+    },
+    speech_habits: {},
+    strengths: [
+      "발표 연습을 바로 시작할 수 있도록 기본 기준으로 흐름을 잡았습니다.",
+      referenceProfile ? "선택한 레퍼런스 스타일을 기준 비교에 반영할 준비가 되었습니다." : "기본 발표 기준으로 속도와 침묵을 확인했습니다.",
+    ],
+    improvements: [
+      referenceProfile?.speechRate || "말하기 속도를 일정하게 유지해 보세요.",
+      referenceProfile?.pauseTiming || "중요한 문장 뒤에는 짧게 멈춰 핵심을 남겨 보세요.",
+      referenceProfile?.emphasis || "핵심 단어는 문장 안에서 한 번 더 분명하게 강조해 보세요.",
+    ],
+    detailed_feedback: {
+      priority_feedback: [
+        referenceProfile?.speechRate || "말하기 속도가 들쭉날쭉하지 않게 첫 30초를 안정적으로 시작하세요.",
+        referenceProfile?.pauseTiming || "문단 전환부에서 1초 정도 쉬면 청자가 따라오기 쉽습니다.",
+        referenceProfile?.emphasis || "결론 문장에서는 핵심 단어를 또렷하게 눌러 말하세요.",
+      ],
+      practice_plan: [
+        "대본 첫 문단을 소리 내어 읽고 속도를 일정하게 맞춥니다.",
+        "핵심 문장 뒤에 짧은 멈춤을 넣어 다시 연습합니다.",
+        "발표 종료 후 리포트에서 속도, 침묵, 대본 전달 항목을 확인합니다.",
+      ],
+    },
+    keyword_feedback: {
+      covered_keywords: spokenText ? spokenText.split(/\s+/).slice(0, 5) : [],
+      missed_keywords: script.split(/\s+/).filter(Boolean).slice(0, 4),
+    },
+    timeline_log: [
+      {
+        time: "00:00",
+        type: "start",
+        title: "기본 발표 기준으로 시작",
+        severity: "low",
+        evidence: "레퍼런스나 대본 교정 없이도 발표 연습을 진행했습니다.",
+        spoken_excerpt: spokenText || "아직 인식된 발화가 적습니다.",
+        suggestion: "다음에는 대본 피드백을 먼저 실행하면 더 구체적인 비교가 가능합니다.",
+      },
+    ],
+    issue_log: hasEnoughSpeech ? [] : [
+      {
+        time: "00:00",
+        type: "short_speech",
+        title: "발화량 부족",
+        severity: "medium",
+        evidence: "분석할 말한 내용이 충분하지 않았습니다.",
+        spoken_excerpt: spokenText || "인식된 발화 없음",
+        suggestion: "최소 한 문단 이상 말한 뒤 종료하면 채점과 피드백이 더 정확해집니다.",
+      },
+    ],
+    reference_video: referenceVideo || null,
+    reference_comparison: selectedReferenceStyle ? {
+      title: selectedReferenceStyle.title,
+      author_name: selectedReferenceStyle.speakerName,
+      targets: ["말하기 속도", "쉬는 타이밍", "강조 방식", "화법"],
+      reference_profile: null,
+      notes: [
+        selectedReferenceStyle.profile.speechRate,
+        selectedReferenceStyle.profile.pauseTiming,
+        selectedReferenceStyle.profile.emphasis,
+      ].filter(Boolean),
+      analysis_note: "선택한 레퍼런스 스타일을 기본 비교 기준으로 사용합니다.",
+    } : null,
+  };
+}
 
 const weaknessItems = [
   { tag: "말 속도", text: "발표 초반 30초에서 말 속도가 빠른 편입니다." },

@@ -2,14 +2,18 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from io import BytesIO
 from statistics import mean, pstdev
 from typing import Any
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from docx import Document
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pptx import Presentation
 from pydantic import BaseModel, Field
+from pypdf import PdfReader
 
 
 class StartSessionRequest(BaseModel):
@@ -34,6 +38,13 @@ class MetricSample(BaseModel):
 
 class FinishSessionRequest(BaseModel):
     transcript: str = ""
+
+
+class ImportedScriptResponse(BaseModel):
+    filename: str
+    text: str
+    character_count: int
+    source_type: str
 
 
 class SessionState(BaseModel):
@@ -64,6 +75,9 @@ app.add_middleware(
 )
 
 sessions: dict[str, SessionState] = {}
+MAX_SCRIPT_FILE_BYTES = 10 * 1024 * 1024
+TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".text", ".csv", ".srt"}
+SUPPORTED_SCRIPT_EXTENSIONS = TEXT_EXTENSIONS | {".pdf", ".docx", ".pptx"}
 
 
 def tokenize(text: str) -> list[str]:
@@ -120,6 +134,76 @@ def recent_excerpt(text: str, limit: int = 140) -> str:
     if len(compact) <= limit:
         return compact
     return f"...{compact[-limit:]}"
+
+
+def normalize_imported_text(text: str) -> str:
+    text = text.replace("\x00", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def file_extension(filename: str) -> str:
+    _, extension = os.path.splitext(filename.lower())
+    return extension
+
+
+def extract_text_from_pdf(content: bytes) -> str:
+    reader = PdfReader(BytesIO(content))
+    pages = []
+    for index, page in enumerate(reader.pages, start=1):
+        page_text = page.extract_text() or ""
+        if page_text.strip():
+            pages.append(f"[{index}쪽]\n{page_text.strip()}")
+    return "\n\n".join(pages)
+
+
+def extract_text_from_docx(content: bytes) -> str:
+    document = Document(BytesIO(content))
+    parts = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                parts.append(" | ".join(cells))
+    return "\n".join(parts)
+
+
+def extract_text_from_pptx(content: bytes) -> str:
+    deck = Presentation(BytesIO(content))
+    slides = []
+    for index, slide in enumerate(deck.slides, start=1):
+        slide_text = []
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                slide_text.append(shape.text.strip())
+        if slide_text:
+            slides.append(f"[슬라이드 {index}]\n" + "\n".join(slide_text))
+    return "\n\n".join(slides)
+
+
+def extract_script_text(filename: str, content: bytes) -> tuple[str, str]:
+    extension = file_extension(filename)
+    if extension not in SUPPORTED_SCRIPT_EXTENSIONS:
+        supported = ", ".join(sorted(SUPPORTED_SCRIPT_EXTENSIONS))
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 파일 형식입니다. 지원 형식: {supported}")
+
+    try:
+        if extension in TEXT_EXTENSIONS:
+            try:
+                return content.decode("utf-8-sig"), "text"
+            except UnicodeDecodeError:
+                return content.decode("cp949", errors="ignore"), "text"
+        if extension == ".pdf":
+            return extract_text_from_pdf(content), "pdf"
+        if extension == ".docx":
+            return extract_text_from_docx(content), "docx"
+        if extension == ".pptx":
+            return extract_text_from_pptx(content), "pptx"
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="파일에서 대본 텍스트를 읽지 못했습니다.") from exc
+
+    raise HTTPException(status_code=400, detail="파일을 읽지 못했습니다.")
 
 
 def script_quality(script: str) -> dict[str, Any]:
@@ -594,6 +678,26 @@ async def ai_status() -> dict[str, Any]:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/api/script/import", response_model=ImportedScriptResponse)
+async def import_script_file(file: UploadFile = File(...)) -> ImportedScriptResponse:
+    filename = file.filename or "script"
+    content = await file.read()
+    if len(content) > MAX_SCRIPT_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="10MB 이하의 파일만 불러올 수 있습니다.")
+
+    text, source_type = extract_script_text(filename, content)
+    normalized = normalize_imported_text(text)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="파일에서 읽을 수 있는 대본 내용을 찾지 못했습니다.")
+
+    return ImportedScriptResponse(
+        filename=filename,
+        text=normalized,
+        character_count=len(normalized),
+        source_type=source_type,
+    )
 
 
 @app.post("/api/session/start")

@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  BarChart3,
+  Clock3,
   FileText,
+  Leaf,
   Loader2,
+  MessageCircle,
+  Mic,
   Play,
   RefreshCcw,
   Send,
@@ -73,6 +78,15 @@ const situationMessages = {
   },
 };
 
+const analysisItems = [
+  { label: "말 빠르기", icon: Mic },
+  { label: "침묵 구간", icon: Clock3 },
+  { label: "대본 전달력", icon: BarChart3 },
+  { label: "쿠션어 사용", icon: MessageCircle },
+  { label: "전환 문장 타이밍", icon: Clock3 },
+  { label: "마무리 밀도", icon: BarChart3 },
+];
+
 function tokenCount(text) {
   return (text.toLowerCase().match(/[가-힣a-z0-9']+/g) || []).length;
 }
@@ -139,6 +153,7 @@ function App() {
   const [isPresenting, setIsPresenting] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [transcriptSegments, setTranscriptSegments] = useState([]);
   const [interimTranscript, setInterimTranscript] = useState("");
@@ -610,27 +625,30 @@ function App() {
     }
   };
 
-  const importScriptFile = (file) => {
+  const importScriptFile = async (file) => {
     if (!file) return;
     setError("");
-    if (file.size > 1024 * 1024 * 2) {
-      setError("2MB 이하의 텍스트 파일만 불러올 수 있습니다.");
+    if (file.size > 1024 * 1024 * 10) {
+      setError("10MB 이하의 파일만 불러올 수 있습니다.");
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result || "").trim();
-      if (!text) {
-        setError("파일에서 읽을 수 있는 대본 내용을 찾지 못했습니다.");
-        return;
-      }
-      setScript(text);
-    };
-    reader.onerror = () => {
-      setError("파일을 읽지 못했습니다. txt 또는 md 파일로 다시 시도해 주세요.");
-    };
-    reader.readAsText(file, "UTF-8");
+    setIsImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(`${API_BASE_URL}/api/script/import`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || "파일을 읽지 못했습니다.");
+      setScript(data.text);
+    } catch (err) {
+      setError(err.message || "파일을 읽지 못했습니다. txt, md, pdf, docx, pptx 파일로 다시 시도해 주세요.");
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   const finishPresentation = async () => {
@@ -705,6 +723,7 @@ function App() {
           <SetupPage
             aiStatus={aiStatus}
             error={error}
+            isImporting={isImporting}
             isStarting={isStarting}
             importScriptFile={importScriptFile}
             script={script}
@@ -752,11 +771,12 @@ function App() {
   );
 }
 
-function SetupPage({ aiStatus, error, importScriptFile, isStarting, script, setScript, startPresentation }) {
+function SetupPage({ aiStatus, error, importScriptFile, isImporting, isStarting, script, setScript, startPresentation }) {
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef(null);
-  const wordCount = tokenCount(script);
-  const minutes = Math.max(1, Math.round(wordCount / 120));
+  const scriptWords = tokenCount(script);
+  const estimatedMinutes = Math.max(1, Math.round(scriptWords / 135));
+  const keywordEstimate = scriptWords ? Math.min(12, Math.max(1, Math.round(scriptWords / 18))) : 0;
 
   const handleDrop = (event) => {
     event.preventDefault();
@@ -765,61 +785,127 @@ function SetupPage({ aiStatus, error, importScriptFile, isStarting, script, setS
   };
 
   return (
-    <section className="setup-focus">
-      <header className="setup-hero">
-        <p className="eyebrow">Presentation Coach</p>
-        <h1>대본을 올리면, 리허설이 시작됩니다</h1>
-        <p>말의 리듬과 놓친 순간만 선명하게 남깁니다.</p>
+    <>
+      <nav className="brand-nav" aria-label="서비스">
+        <a className="brand-mark" href="#top" aria-label="온라인 발표 연습실">
+          <span className="brand-spark"><Leaf size={13} /></span>
+          rehearsal note
+        </a>
+        <div className="nav-links">
+          <a href="#script">대본</a>
+          <a href="#insight">피드백</a>
+          <a href="#script">시작</a>
+        </div>
+      </nav>
+
+      <header className="product-header">
+        <div className="hero-copy">
+          <p className="eyebrow">Presentation rehearsal</p>
+          <h1>
+            내가 닮을 발표
+            <span>Pitch up</span>
+          </h1>
+          <div className="hero-actions">
+            <button className="primary-button" disabled={isStarting} onClick={startPresentation}>
+              {isStarting ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
+              발표 시작
+            </button>
+            <span className="hero-note">마이크 권한은 연습을 시작할 때만 요청합니다.</span>
+          </div>
+        </div>
+        <aside className="hero-dashboard" aria-label="리허설 프리뷰">
+          <div className="dashboard-topline">
+            <span>session brief</span>
+            <strong>{scriptWords || 0} words</strong>
+          </div>
+          <div className="preview-metrics">
+            <div className="preview-card raised">
+              <Clock3 size={18} />
+              <span>예상 시간</span>
+              <strong>{estimatedMinutes}<small>분</small></strong>
+            </div>
+            <div className="preview-card">
+              <BarChart3 size={18} />
+              <span>피드백</span>
+              <strong>{analysisItems.length}<small>가지</small></strong>
+            </div>
+          </div>
+          <div className="mini-chart" aria-label="리허설 분석 예시">
+            <div className="brief-line">
+              <span>pace</span>
+              <strong>5.9 syll/sec</strong>
+            </div>
+            <div className="brief-line">
+              <span>pause</span>
+              <strong>2.4 sec longest</strong>
+            </div>
+            <div className="brief-line">
+              <span>script</span>
+              <strong>{keywordEstimate ? `핵심어 ${keywordEstimate}개 후보` : "대본 입력 대기"}</strong>
+            </div>
+            <p className="brief-copy">문장 끝에서 호흡이 조금 짧습니다. 두 번째 전환부 앞에 쉼표를 하나 더 두세요.</p>
+          </div>
+          <div className="preview-message">
+            <MessageCircle size={16} />
+            <p>“속도는 안정적입니다. 결론 전에 한 문장만 더 천천히 읽어보세요.”</p>
+          </div>
+        </aside>
       </header>
 
       {error && <div className="notice">{error}</div>}
 
-      <section className="script-composer">
-        <div className="composer-meta">
-          <span>{wordCount}개 단어</span>
-          <span>예상 {minutes}분</span>
-          <span>{aiStatus?.live ? "AI 리포트 연결됨" : "기본 분석 사용"}</span>
-        </div>
-        <div className="script-panel setup-script dark-script">
+      <section className="setup-grid" id="script">
+        <div className="script-panel setup-script">
+          <div className="panel-heading">
+            <h2>발표 대본</h2>
+            <span>{scriptWords} words · 예상 {estimatedMinutes}분</span>
+          </div>
           <textarea
             value={script}
             onChange={(event) => setScript(event.target.value)}
             placeholder={"여기에 발표 대본을 붙여넣으세요.\n\n예) 안녕하세요. 오늘은..."}
           />
+          <div
+            className={`file-dropzone inline ${dragging ? "dragging" : ""}`}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setDragging(true);
+            }}
+            onDragOver={(event) => event.preventDefault()}
+            onDragLeave={() => setDragging(false)}
+            onDrop={handleDrop}
+          >
+            <FileText size={20} />
+            <strong>대본이나 발표 자료를 여기에 놓으세요</strong>
+            <span>직접 쓰거나 txt, md, pdf, docx, pptx 파일에서 텍스트를 불러옵니다.</span>
+            <button className="file-button" type="button" disabled={isImporting} onClick={() => fileInputRef.current?.click()}>
+              {isImporting ? <Loader2 className="spin" size={17} /> : <Upload size={17} />}
+              {isImporting ? "불러오는 중" : "파일 불러오기"}
+            </button>
+            <input
+              ref={fileInputRef}
+              hidden
+              type="file"
+              accept=".txt,.md,.markdown,.text,.csv,.srt,.pdf,.docx,.pptx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+              onChange={(event) => {
+                importScriptFile(event.target.files?.[0]);
+                event.target.value = "";
+              }}
+            />
+          </div>
         </div>
 
-        <div
-          className={`file-dropzone ${dragging ? "dragging" : ""}`}
-          onDragEnter={(event) => {
-            event.preventDefault();
-            setDragging(true);
-          }}
-          onDragOver={(event) => event.preventDefault()}
-          onDragLeave={() => setDragging(false)}
-          onDrop={handleDrop}
-        >
-          <FileText size={20} />
-          <strong>대본 파일을 끌어다 놓거나 선택하세요</strong>
-          <span>txt, md 같은 텍스트 파일을 바로 대본으로 불러옵니다.</span>
-          <button className="file-button" type="button" onClick={() => fileInputRef.current?.click()}>
-            <Upload size={17} />
-            파일 추가
-          </button>
-          <input
-            ref={fileInputRef}
-            hidden
-            type="file"
-            accept=".txt,.md,.text,.csv,.srt"
-            onChange={(event) => importScriptFile(event.target.files?.[0])}
-          />
-        </div>
-
-        <button className="start-button" disabled={isStarting} onClick={startPresentation}>
-          {isStarting ? <Loader2 className="spin" size={19} /> : <Play size={19} />}
-          발표 시작
-        </button>
+        <aside className="ready-panel" id="insight">
+          <div className="service-checklist">
+            <h2>조용히 봐드릴 부분</h2>
+            <p>발표를 끊지 않고, 끝난 뒤 필요한 부분만 부드럽게 정리합니다.</p>
+            {analysisItems.map(({ icon: Icon, label }) => (
+              <span key={label}><Icon size={15} />{label}</span>
+            ))}
+          </div>
+        </aside>
       </section>
-    </section>
+    </>
   );
 }
 

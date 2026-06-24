@@ -50,6 +50,7 @@ from .config import (
 from .models import FinishSessionRequest, GeminiRateLimitError, ImportedScriptResponse, MetricSample, SessionState
 from .runtime_state import ai_status_cache, gemini_limiter, gemini_runtime_state, sessions
 from .services.gemini_service import call_gemini_api
+from .services.reference_compare_service import build_user_profile_from_samples, compare_with_reference
 from .services.reference_service import build_reference_comparison, build_reference_video
 from .services.text_service import (
     clamp,
@@ -946,6 +947,10 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         report["reference_video"] = session.reference_video
         report["reference_comparison"] = build_reference_comparison(report, session.reference_video)
 
+    user_reference_profile = build_user_profile_from_samples(samples)
+    if user_reference_profile:
+        report["reference_speaker_comparison"] = compare_with_reference(user_reference_profile)
+
     return report
 
 
@@ -993,6 +998,7 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
             "presentation_material": fallback_report.get("presentation_material", {}),
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
+            "reference_speaker_comparison": fallback_report.get("reference_speaker_comparison"),
             "audience_reactions": fallback_report["audience_reactions"],
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
@@ -1012,6 +1018,7 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             report = json.loads(text)
             report["used_gemini"] = True
+            report.setdefault("reference_speaker_comparison", fallback_report.get("reference_speaker_comparison"))
             return report
     except Exception:
         fallback_report["summary"] = "AI 리포트를 생성하지 못해 기본 분석 리포트로 정리했습니다. 발표 흐름과 전달력 판단에는 저장된 연습 데이터가 사용되었습니다."
@@ -1046,6 +1053,7 @@ async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[
             "presentation_material": fallback_report.get("presentation_material", {}),
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
+            "reference_speaker_comparison": fallback_report.get("reference_speaker_comparison"),
             "audience_reactions": fallback_report["audience_reactions"],
         },
     }
@@ -1069,6 +1077,7 @@ async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[
             "rate_limited": False,
             "remaining_calls": remaining,
         }
+        report.setdefault("reference_speaker_comparison", fallback_report.get("reference_speaker_comparison"))
         return report
     except GeminiRateLimitError as exc:
         fallback_report["summary"] = (

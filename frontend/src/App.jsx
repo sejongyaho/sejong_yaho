@@ -29,6 +29,32 @@ const analysisItems = [
   { label: "마무리 밀도", icon: BarChart3 },
 ];
 
+const DEMO_REFERENCE_VIDEO = {
+  video_id: "demo-reference-speaker",
+  title: "경제 해설형 발표자 기준",
+  author_name: "데모 기준 모델",
+  thumbnail_url: "",
+  analysis_note: "데모에서는 입력한 URL 대신 고정된 경제 해설형 발표자 기준을 사용합니다.",
+  reference_profile: {
+    transcript_source: "demo_profile",
+    syllables_per_second: 5.8,
+    words_per_minute: 92.9,
+    average_sentence_words: 13,
+    top_keywords: ["경제 해설", "고밀도 설명", "짧은 쉼", "음량 강조", "정보 전달"],
+    speech_rate_summary: "분당 약 93단어 수준으로, 설명을 끊기지 않게 이어가는 고밀도 말하기 속도입니다.",
+    speaking_style: "차분하지만 정보량이 많은 해설형 말투입니다. 핵심 개념을 짧은 문장으로 이어 붙이며 설명합니다.",
+    pause_timing_summary: "평균 쉼은 약 0.54초로 짧습니다. 긴 침묵보다 문장 사이의 짧은 숨 고르기를 자주 사용합니다.",
+    emphasis_summary: "큰 제스처보다 음량 변화와 단어 선택으로 중요한 정보를 강조하는 스타일입니다.",
+  },
+  benchmark_targets: {
+    speech_rate: "분당 90~96단어 정도의 고밀도 설명 속도",
+    speaking_style: "경제 해설처럼 논리와 근거를 빠르게 연결하는 말투",
+    pause_timing: "핵심 문장 뒤 짧게 멈추고 바로 다음 설명으로 이어가는 방식",
+    emphasis: "목소리 크기 변화와 핵심어 반복으로 강조",
+  },
+  status_label: "데모 기준 분석 완료 · 경제 해설형 발표자",
+};
+
 function App() {
   const [page, setPage] = useState("setup");
   const [script, setScript] = useState("");
@@ -203,20 +229,13 @@ function App() {
 
     setIsLoadingReference(true);
     setError("");
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/reference/youtube`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
+    window.setTimeout(() => {
+      setReferenceVideo({
+        ...DEMO_REFERENCE_VIDEO,
+        source_url: url,
       });
-      if (!response.ok) throw new Error("YouTube 기준 영상을 확인하지 못했습니다.");
-      setReferenceVideo(await response.json());
-    } catch (err) {
-      setReferenceVideo(null);
-      setError(err.message || "기준 영상을 불러오지 못했습니다.");
-    } finally {
       setIsLoadingReference(false);
-    }
+    }, 250);
   };
 
   const pushChatForSituation = (nextSituation, now, force = false) => {
@@ -528,7 +547,7 @@ function App() {
     try {
       const formData = new FormData();
       formData.append("script", script);
-      formData.append("reference_video_url", referenceVideoUrl.trim());
+      formData.append("reference_video_url", "");
       materialFiles.forEach((file) => {
         formData.append("materials", file);
       });
@@ -540,7 +559,7 @@ function App() {
       if (!response.ok) throw new Error(data.detail || "사전 분석을 진행하지 못했습니다.");
       setScriptFeedback(data.script_feedback);
       setMaterialFeedback(data.presentation_material || null);
-      setReferenceVideo(data.reference_video || null);
+      setReferenceVideo(referenceVideo || data.reference_video || null);
       setPreparedSignature(buildPreparationSignature(script, materialFiles, referenceVideoUrl));
     } catch (err) {
       setPreparedSignature("");
@@ -562,7 +581,7 @@ function App() {
     try {
       const formData = new FormData();
       formData.append("script", script);
-      formData.append("reference_video_url", referenceVideoUrl.trim());
+      formData.append("reference_video_url", "");
       materialFiles.forEach((file) => {
         formData.append("materials", file);
       });
@@ -572,7 +591,7 @@ function App() {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || "발표 세션을 시작하지 못했습니다.");
-      setReferenceVideo(data.reference_video || null);
+      setReferenceVideo(referenceVideo || data.reference_video || null);
       await launchPresentation(data.session_id);
     } catch (err) {
       cleanupRecording();
@@ -941,11 +960,11 @@ function SetupPage({
           {referenceVideo ? (
             <>
               <div className="reference-card">
-                <img src={referenceVideo.thumbnail_url} alt="" />
+                {referenceVideo.thumbnail_url ? <img src={referenceVideo.thumbnail_url} alt="" /> : <SquarePlay size={38} />}
                 <div>
                   <strong>{referenceVideo.title || `YouTube 영상 ${referenceVideo.video_id}`}</strong>
                   <span>{referenceVideo.author_name}</span>
-                  <span>{formatReferenceStatus(referenceVideo)}</span>
+                  <span>{referenceVideo.status_label || formatReferenceStatus(referenceVideo)}</span>
                 </div>
               </div>
               <ReferenceQuickAnalysis referenceVideo={referenceVideo} />
@@ -1085,6 +1104,7 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
   const practicePlan = report.detailed_feedback?.practice_plan || [];
   const keywordFeedback = report.keyword_feedback || {};
   const presentationMaterial = report.presentation_material || materialFeedback || null;
+  const referenceSpeakerComparison = report.reference_speaker_comparison;
 
   return (
     <section className="report-panel service-report">
@@ -1149,6 +1169,58 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
               ))}
             </div>
           ) : null}
+        </section>
+      ) : null}
+
+      {referenceSpeakerComparison ? (
+        <section className="reference-report reference-speaker-report">
+          <div className="section-heading">
+            <h3>기준 발표자 비교</h3>
+            <span>{referenceSpeakerComparison.summary?.similarity_score ?? 0}점 유사</span>
+          </div>
+          <strong>
+            {referenceSpeakerComparison.reference?.name} · {referenceSpeakerComparison.reference?.style_type}
+          </strong>
+          <p>{referenceSpeakerComparison.reference?.description}</p>
+          <div className="reference-metric-grid">
+            <ScoreDetail
+              label="말 밀도"
+              value={`${referenceSpeakerComparison.summary?.user_speech_density_avg ?? 0} WPM`}
+              hint={`기준 ${referenceSpeakerComparison.summary?.reference_speech_density_avg ?? 0} WPM · ${referenceSpeakerComparison.summary?.density_diff_percent ?? 0}%`}
+            />
+            <ScoreDetail
+              label="평균 쉼"
+              value={`${referenceSpeakerComparison.summary?.user_avg_pause_sec ?? 0}초`}
+              hint={`기준 ${referenceSpeakerComparison.summary?.reference_avg_pause_sec ?? 0}초`}
+            />
+            <ScoreDetail
+              label="긴 쉼"
+              value={`${referenceSpeakerComparison.summary?.user_long_pause_count_ge_1s ?? 0}회`}
+              hint={`기준 ${referenceSpeakerComparison.summary?.reference_long_pause_count_ge_1s ?? 0}회`}
+            />
+            <ScoreDetail
+              label="강조 변화"
+              value={`${referenceSpeakerComparison.summary?.user_volume_variation_db ?? 0}`}
+              hint={`기준 ${referenceSpeakerComparison.summary?.reference_volume_variation_db ?? 0}`}
+            />
+          </div>
+          <ul>
+            {(referenceSpeakerComparison.feedback || []).map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+          <div className="reference-section-grid">
+            {(referenceSpeakerComparison.section_feedback || []).map((section) => (
+              <article key={section.section}>
+                <h4>{section.label}</h4>
+                <p>{section.density_feedback}</p>
+                <p>{section.pause_feedback}</p>
+                <span>
+                  내 발표 {section.user?.speech_density ?? 0} WPM / {section.user?.avg_pause_sec ?? 0}초 쉼
+                </span>
+              </article>
+            ))}
+          </div>
         </section>
       ) : null}
 

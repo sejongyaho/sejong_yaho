@@ -12,6 +12,7 @@ from collections import deque
 from datetime import datetime, timezone
 from html import unescape
 from io import BytesIO
+from pathlib import Path
 from statistics import mean, pstdev
 from typing import Any
 from uuid import uuid4
@@ -49,6 +50,8 @@ from .config import (
 )
 from .models import FinishSessionRequest, GeminiRateLimitError, ImportedScriptResponse, MetricSample, SessionState
 from .runtime_state import ai_status_cache, gemini_limiter, gemini_runtime_state, sessions
+from .session_store import append_metric as persist_metric
+from .session_store import init_session_store, load_session as load_persisted_session, save_session
 from .services.gemini_service import call_gemini_api
 from .services.reference_service import build_reference_comparison, build_reference_video
 from .services.text_service import (
@@ -85,6 +88,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+init_session_store()
+
+
+def get_session_state(session_id: str) -> SessionState | None:
+    session = sessions.get(session_id)
+    if session:
+        return session
+    restored_session = load_persisted_session(session_id)
+    if restored_session:
+        sessions[session_id] = restored_session
+    return restored_session
+
+
+def build_overlap_ratio(script_tokens: set[str], transcript: str) -> float:
+    if not script_tokens:
+        return 0.0
+    transcript_tokens = set(tokenize(transcript))
+    if not transcript_tokens:
+        return 0.0
+    return len(script_tokens & transcript_tokens) / len(script_tokens)
 
 def build_issue_log(session: SessionState, transcript: str) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
@@ -123,9 +147,7 @@ def build_issue_log(session: SessionState, transcript: str) -> list[dict[str, An
         current_transcript = sample.transcript.strip()
         delta = transcript_delta(previous_transcript, current_transcript)
         excerpt = recent_excerpt(delta or current_transcript)
-        overlap = 0.0
-        if script_tokens:
-            overlap = len(script_tokens & set(tokenize(current_transcript))) / len(script_tokens)
+        overlap = build_overlap_ratio(script_tokens, current_transcript)
 
         if sample.elapsed_seconds >= 8 and sample.syllables_per_second >= 7.2:
             add_issue(
@@ -212,6 +234,120 @@ def build_issue_log(session: SessionState, transcript: str) -> list[dict[str, An
     return issues[:10]
 
 
+def classify_timeline_window(
+    script_tokens: set[str],
+    samples: list[MetricSample],
+    previous_transcript: str,
+) -> dict[str, Any]:
+    start_sample = samples[0]
+    end_sample = samples[-1]
+    transcript = end_sample.transcript.strip()
+    overlap = build_overlap_ratio(script_tokens, transcript)
+    avg_sps = mean(sample.syllables_per_second for sample in samples) if samples else 0
+    avg_wpm = mean(sample.words_per_minute for sample in samples) if samples else 0
+    max_pause_ratio = max(sample.pause_ratio for sample in samples) if samples else 0
+    max_long_silence = max(sample.longest_silence_seconds for sample in samples) if samples else 0
+    speech_detected = any(sample.speech_detected for sample in samples)
+    delta = transcript_delta(previous_transcript, transcript)
+    excerpt = recent_excerpt(delta or transcript)
+
+    title = "안정적으로 전달한 구간"
+    evidence = (
+        f"{format_seconds(start_sample.elapsed_seconds)}-{format_seconds(end_sample.elapsed_seconds)} 동안 "
+        f"초당 {avg_sps:.1f}음절, 휴지 비율 {max_pause_ratio * 100:.0f}%, 대본 반영 {overlap * 100:.0f}%입니다."
+    )
+    suggestion = "지금 구간의 속도와 문장 연결 방식을 다음 핵심 구간에도 유지해 보세요."
+    severity = "low"
+    log_type = "steady"
+
+    if not speech_detected:
+        title = "음성 인식이 거의 잡히지 않은 구간"
+        evidence = (
+            f"{format_seconds(start_sample.elapsed_seconds)}-{format_seconds(end_sample.elapsed_seconds)} 구간에서 "
+            "음성 인식 데이터가 거의 없었습니다."
+        )
+        suggestion = "마이크 거리와 브라우저 음성 인식 상태를 먼저 확인해 보세요."
+        severity = "medium"
+        log_type = "recognition_gap"
+    elif max_long_silence >= 8 or max_pause_ratio >= 0.32:
+        title = "침묵이 길어 흐름이 끊긴 구간"
+        evidence = (
+            f"최장 침묵 {max_long_silence:.1f}초, 휴지 비율 {max_pause_ratio * 100:.0f}%로 "
+            "청중 입장에서 멈춘 느낌이 크게 날 수 있습니다."
+        )
+        suggestion = "다음 문장으로 넘어갈 때 바로 꺼낼 연결 문장을 미리 준비해 두세요."
+        severity = "high"
+        log_type = "long_silence"
+    elif avg_sps >= 7.1 or avg_wpm >= 175:
+        title = "속도가 빨라 정보가 밀릴 수 있는 구간"
+        evidence = f"평균 초당 {avg_sps:.1f}음절, 분당 {avg_wpm:.0f}단어 수준으로 목표 범위를 넘었습니다."
+        suggestion = "문장 끝마다 짧게 끊고 핵심 명사에만 힘을 실어 전달해 보세요."
+        severity = "medium" if avg_sps < 8 else "high"
+        log_type = "pace_fast"
+    elif 0 < avg_sps < 4.8:
+        title = "속도가 느려 리듬이 처진 구간"
+        evidence = f"평균 초당 {avg_sps:.1f}음절로 전체 리듬이 느슨하게 들릴 수 있습니다."
+        suggestion = "문장 첫 단어를 더 또렷하게 시작해서 전개 속도를 조금 끌어올려 보세요."
+        severity = "medium"
+        log_type = "pace_slow"
+    elif overlap < 0.2 and len(tokenize(transcript)) >= 10:
+        title = "대본 핵심어와 멀어진 구간"
+        evidence = f"이 시점 대본 반영률이 {overlap * 100:.0f}% 수준으로 내려가 핵심 메시지가 흐려질 수 있습니다."
+        suggestion = "슬라이드 제목이나 결론 키워드를 다시 말해 흐름을 붙잡아 보세요."
+        severity = "medium"
+        log_type = "off_script"
+    elif avg_sps >= 5.5 and avg_sps <= 6.4 and max_pause_ratio >= 0.1 and max_pause_ratio <= 0.22 and overlap >= 0.35:
+        title = "속도와 호흡이 잘 맞은 구간"
+        evidence = (
+            f"평균 초당 {avg_sps:.1f}음절, 휴지 비율 {max_pause_ratio * 100:.0f}%, "
+            f"대본 반영 {overlap * 100:.0f}%로 안정적이었습니다."
+        )
+        suggestion = "이 구간을 기준 템포로 삼고 비슷한 말하기 리듬을 반복 연습해 보세요."
+        severity = "low"
+        log_type = "strong_segment"
+
+    return {
+        "time": f"{format_seconds(start_sample.elapsed_seconds)}-{format_seconds(end_sample.elapsed_seconds)}",
+        "elapsed_seconds": round(end_sample.elapsed_seconds, 1),
+        "type": log_type,
+        "severity": severity,
+        "title": title,
+        "evidence": evidence,
+        "spoken_excerpt": excerpt or "이 구간에서 새로 인식된 발표 문장이 많지 않았습니다.",
+        "metric": {
+            "average_syllables_per_second": round(avg_sps, 2),
+            "average_words_per_minute": round(avg_wpm, 1),
+            "pause_ratio_percent": round(max_pause_ratio * 100, 1),
+            "longest_silence_seconds": round(max_long_silence, 1),
+            "script_overlap_percent": round(overlap * 100),
+        },
+        "suggestion": suggestion,
+    }
+
+
+def build_timeline_log(session: SessionState) -> list[dict[str, Any]]:
+    if not session.samples:
+        return []
+
+    script_tokens = set(tokenize(session.script))
+    logs: list[dict[str, Any]] = []
+    previous_transcript = ""
+    window_size = 2
+
+    for start in range(0, len(session.samples), window_size):
+        window = session.samples[start : start + window_size]
+        if not window:
+            continue
+        logs.append(classify_timeline_window(script_tokens, window, previous_transcript))
+        previous_transcript = window[-1].transcript.strip()
+
+    if len(logs) > 18:
+        indices = sample_indices(len(logs), 18)
+        logs = [logs[index] for index in indices]
+
+    return logs
+
+
 def build_keyword_feedback(script: str, transcript: str) -> dict[str, Any]:
     script_tokens = [token for token in tokenize(script) if len(token) > 1]
     spoken_tokens = set(tokenize(transcript))
@@ -291,6 +427,136 @@ def sample_indices(total: int, limit: int) -> list[int]:
         return [0]
     step = (total - 1) / (limit - 1)
     return sorted({min(total - 1, round(step * index)) for index in range(limit)})
+
+
+def compact_text(text: str, max_chars: int = 220) -> str:
+    normalized = re.sub(r"\s+", " ", (text or "")).strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return f"{normalized[: max_chars - 1].rstrip()}..."
+
+
+def compact_issue_log(issue_log: list[dict[str, Any]], max_items: int = 5) -> list[dict[str, Any]]:
+    compacted = []
+    for item in issue_log[:max_items]:
+        compacted.append(
+            {
+                "time": item.get("time"),
+                "severity": item.get("severity"),
+                "type": item.get("type"),
+                "title": item.get("title"),
+                "evidence": compact_text(item.get("evidence", ""), 120),
+                "spoken_excerpt": compact_text(item.get("spoken_excerpt", ""), 120),
+                "suggestion": compact_text(item.get("suggestion", ""), 120),
+            }
+        )
+    return compacted
+
+
+def build_sample_summary(samples: list[MetricSample]) -> dict[str, Any]:
+    if not samples:
+        return {
+            "sample_count": 0,
+            "recent_samples": [],
+            "average_words_per_minute": 0,
+            "average_syllables_per_second": 0,
+            "max_pause_ratio_percent": 0,
+            "max_longest_silence_seconds": 0,
+            "reaction_counts": {},
+        }
+
+    recent_count = min(18, len(samples))
+    recent_samples = []
+    for index in sample_indices(len(samples), recent_count):
+        sample = samples[index]
+        recent_samples.append(
+            {
+                "elapsed_seconds": round(sample.elapsed_seconds, 1),
+                "words_per_minute": round(sample.words_per_minute, 1),
+                "syllables_per_second": round(sample.syllables_per_second, 2),
+                "articulation_syllables_per_second": round(sample.articulation_syllables_per_second, 2),
+                "pause_ratio_percent": round(sample.pause_ratio * 100, 1),
+                "longest_silence_seconds": round(sample.longest_silence_seconds, 1),
+                "reaction": sample.reaction,
+                "speech_detected": sample.speech_detected,
+                "transcript_excerpt": compact_text(sample.transcript, 120),
+            }
+        )
+
+    reaction_counts: dict[str, int] = {}
+    for sample in samples:
+        reaction_counts[sample.reaction] = reaction_counts.get(sample.reaction, 0) + 1
+
+    wpms = [sample.words_per_minute for sample in samples if sample.words_per_minute > 0]
+    sps_values = [sample.syllables_per_second for sample in samples if sample.syllables_per_second > 0]
+
+    return {
+        "sample_count": len(samples),
+        "duration_seconds": round(samples[-1].elapsed_seconds, 1),
+        "recent_samples": recent_samples,
+        "average_words_per_minute": round(mean(wpms), 1) if wpms else 0,
+        "average_syllables_per_second": round(mean(sps_values), 2) if sps_values else 0,
+        "max_pause_ratio_percent": round(max(sample.pause_ratio for sample in samples) * 100, 1),
+        "max_longest_silence_seconds": round(max(sample.longest_silence_seconds for sample in samples), 1),
+        "reaction_counts": reaction_counts,
+    }
+
+
+def build_ai_prompt_payload(session: SessionState, fallback_report: dict[str, Any]) -> dict[str, Any]:
+    detailed_feedback = fallback_report.get("detailed_feedback") or {}
+    return {
+        "instruction": (
+            "You are a Korean presentation coach. Return strict JSON only. "
+            "Use the heuristic report as the source of truth, refine wording, and preserve criteria_basis."
+        ),
+        "script_excerpt": compact_text(session.script, 3500),
+        "reference_video": session.reference_video,
+        "sample_summary": build_sample_summary(session.samples),
+        "heuristic_report": {
+            "overall_score": fallback_report.get("overall_score"),
+            "summary": compact_text(fallback_report.get("summary", ""), 500),
+            "strengths": (fallback_report.get("strengths") or [])[:4],
+            "improvements": (fallback_report.get("improvements") or [])[:5],
+            "pace": fallback_report.get("pace"),
+            "silence": fallback_report.get("silence"),
+            "rhythm": fallback_report.get("rhythm"),
+            "script": fallback_report.get("script"),
+            "delivery_match": fallback_report.get("delivery_match"),
+            "keyword_feedback": fallback_report.get("keyword_feedback"),
+            "issue_log": compact_issue_log(fallback_report.get("issue_log") or []),
+            "timeline_log": compact_issue_log(fallback_report.get("timeline_log") or [], 8),
+            "detailed_feedback": {
+                "priority_feedback": (detailed_feedback.get("priority_feedback") or [])[:4],
+                "practice_plan": (detailed_feedback.get("practice_plan") or [])[:3],
+                "coach_note": compact_text(detailed_feedback.get("coach_note", ""), 160),
+            },
+            "criteria_basis": fallback_report.get("criteria_basis"),
+            "presentation_material": fallback_report.get("presentation_material", {}),
+            "reference_video": fallback_report.get("reference_video"),
+            "reference_comparison": fallback_report.get("reference_comparison"),
+            "audience_reactions": fallback_report.get("audience_reactions", {}),
+        },
+        "required_schema": {
+            "overall_score": "number 0-100",
+            "summary": "Korean paragraph with concrete evaluation",
+            "strengths": ["Korean bullet"],
+            "improvements": ["Korean bullet"],
+            "pace": fallback_report["pace"],
+            "silence": fallback_report["silence"],
+            "rhythm": fallback_report["rhythm"],
+            "script": fallback_report["script"],
+            "delivery_match": fallback_report["delivery_match"],
+            "keyword_feedback": fallback_report["keyword_feedback"],
+            "issue_log": fallback_report["issue_log"],
+            "timeline_log": fallback_report.get("timeline_log", []),
+            "detailed_feedback": fallback_report["detailed_feedback"],
+            "criteria_basis": fallback_report["criteria_basis"],
+            "presentation_material": fallback_report.get("presentation_material", {}),
+            "reference_video": fallback_report.get("reference_video"),
+            "reference_comparison": fallback_report.get("reference_comparison"),
+            "audience_reactions": fallback_report["audience_reactions"],
+        },
+    }
 
 
 def render_pdf_images_for_vision(data: bytes, page_limit: int) -> tuple[list[dict[str, Any]], list[str]]:
@@ -891,6 +1157,7 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
     quality = script_quality(session.script)
     improvements.extend(quality["suggestions"])
     issue_log = build_issue_log(session, transcript)
+    timeline_log = build_timeline_log(session)
     keyword_feedback = build_keyword_feedback(session.script, transcript)
 
     report = {
@@ -930,6 +1197,7 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         "strengths": strengths[:4] or ["리허설 데이터를 안정적으로 수집했습니다."],
         "improvements": improvements[:6],
         "issue_log": issue_log,
+        "timeline_log": timeline_log,
         "summary": (
             "신지영(2013)의 운율 중심 전달력 연구를 반영해 속도, 휴지 비율, 조음-말속도 차이, "
             "리듬 안정성과 대본 핵심어 반영도를 함께 분석했습니다."
@@ -1023,32 +1291,7 @@ async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[
     if not api_key:
         return fallback_report
 
-    prompt = {
-        "instruction": "You are a Korean presentation coach. Return strict JSON only and preserve the provided criteria_basis.",
-        "script": session.script,
-        "reference_video": session.reference_video,
-        "samples": [sample.model_dump() for sample in session.samples[-80:]],
-        "heuristic_report": fallback_report,
-        "required_schema": {
-            "overall_score": "number 0-100",
-            "summary": "Korean paragraph with concrete evaluation",
-            "strengths": ["Korean bullet"],
-            "improvements": ["Korean bullet"],
-            "pace": fallback_report["pace"],
-            "silence": fallback_report["silence"],
-            "rhythm": fallback_report["rhythm"],
-            "script": fallback_report["script"],
-            "delivery_match": fallback_report["delivery_match"],
-            "keyword_feedback": fallback_report["keyword_feedback"],
-            "issue_log": fallback_report["issue_log"],
-            "detailed_feedback": fallback_report["detailed_feedback"],
-            "criteria_basis": fallback_report["criteria_basis"],
-            "presentation_material": fallback_report.get("presentation_material", {}),
-            "reference_video": fallback_report.get("reference_video"),
-            "reference_comparison": fallback_report.get("reference_comparison"),
-            "audience_reactions": fallback_report["audience_reactions"],
-        },
-    }
+    prompt = build_ai_prompt_payload(session, fallback_report)
     payload = {
         "contents": [{"parts": [{"text": json.dumps(prompt, ensure_ascii=False)}]}],
         "generationConfig": {"responseMimeType": "application/json"},
@@ -1058,7 +1301,7 @@ async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[
         data, remaining = await call_gemini_api(
             kind="final_report",
             payload=payload,
-            timeout_seconds=20,
+            timeout_seconds=40,
             count_against_limit=True,
             retry_on_unavailable=2,
         )
@@ -1293,6 +1536,7 @@ async def start_session(
         reference_video=reference_video,
     )
     sessions[session_id] = session
+    save_session(session)
     return {
         "session_id": session_id,
         "criteria_basis": presentation_criteria(),
@@ -1303,16 +1547,17 @@ async def start_session(
 
 @app.post("/api/session/{session_id}/metric")
 def add_metric(session_id: str, sample: MetricSample) -> dict[str, str]:
-    session = sessions.get(session_id)
+    session = get_session_state(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     session.samples.append(sample)
+    persist_metric(session_id, sample)
     return {"status": "stored"}
 
 
 @app.post("/api/session/{session_id}/finish")
 async def finish_session(session_id: str, request: FinishSessionRequest) -> dict[str, Any]:
-    session = sessions.get(session_id)
+    session = get_session_state(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     transcript = request.transcript or (session.samples[-1].transcript if session.samples else "")

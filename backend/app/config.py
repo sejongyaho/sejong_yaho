@@ -30,6 +30,12 @@ GEMINI_STATUS_CACHE_SECONDS = int(os.getenv("GEMINI_STATUS_CACHE_SECONDS", "600"
 MAX_SCRIPT_FILE_BYTES = 10 * 1024 * 1024
 TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".text", ".csv", ".srt"}
 SUPPORTED_SCRIPT_EXTENSIONS = TEXT_EXTENSIONS | {".pdf", ".docx", ".pptx"}
+SESSION_STORE_PATH = Path(
+    os.getenv(
+        "SESSION_STORE_PATH",
+        str(Path(__file__).resolve().parent / ".runtime" / "sessions.sqlite3"),
+    )
+)
 
 
 def get_gemini_model() -> str:

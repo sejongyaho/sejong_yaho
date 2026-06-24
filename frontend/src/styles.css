@@ -1638,6 +1638,13 @@ textarea::placeholder {
   margin-top: 14px;
 }
 
+.issue-empty {
+  margin: 14px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
 .issue-item {
   display: grid;
   grid-template-columns: 62px minmax(0, 1fr);

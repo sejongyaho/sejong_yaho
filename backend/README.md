@@ -1,45 +1,19 @@
 # Backend
 
-API 서버 개발 공간입니다. 아직 실제 백엔드 코드는 없습니다.
+Java 백엔드 개발 공간입니다.
 
-## 역할
+현재 Gemini 연동은 별도 `ai-server/`에서 담당합니다. Java 백엔드는 AI 서버의 HTTP API를 호출하고, AI 서버가 Gemini API key를 안전하게 보관한 상태로 Gemini에 요청을 전달합니다.
 
-- API 엔드포인트 구현
-- 데이터 모델 설계
-- 인증/인가 처리
-- 외부 서비스 연동
-- 에러 응답 및 로깅 정책 관리
-
-## 초기화 예정 항목
-
-- 백엔드 프레임워크 선택
-- 패키지 매니저 선택
-- 데이터베이스 선택
-- 환경 변수 구성
-- API 명세 작성
-
-## 예시 구조
+## 연동 흐름
 
 ```text
-backend/
-├── src/
-│   ├── routes/
-│   ├── controllers/
-│   ├── services/
-│   ├── models/
-│   └── config/
-└── README.md
+Java Backend -> AI Server -> Gemini API -> AI Server -> Java Backend
 ```
 
-## 실행 방법
+## 호출 대상
 
-프레임워크 초기화 후 아래 항목을 갱신합니다.
-
-```bash
-# install
-
-# dev
-
-# test
+```text
+POST http://localhost:8000/api/v1/generate
 ```
 
+자세한 실행 방법은 `../ai-server/README.md`를 참고합니다.

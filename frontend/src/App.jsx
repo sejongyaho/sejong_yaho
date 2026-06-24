@@ -19,6 +19,27 @@ import {
 } from "./utils/presentation";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+const SETUP_STORAGE_KEY = "presentation.setup.v1";
+
+function loadStoredSetup() {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(SETUP_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredSetup(payload) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(SETUP_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function clearStoredSetup() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(SETUP_STORAGE_KEY);
+}
 
 const analysisItems = [
   { label: "말 빠르기", icon: Mic },
@@ -90,6 +111,7 @@ function App() {
   const lastChatKeyRef = useRef("");
   const lastChatAtRef = useRef(0);
   const transcriptScrollRef = useRef(null);
+  const setupRestoredRef = useRef(false);
   const metricsRef = useRef({
     elapsed: 0,
     transcript: "",
@@ -111,6 +133,31 @@ function App() {
   );
   const overlap = useMemo(() => scriptOverlap(script, liveTranscript), [script, liveTranscript]);
   const spokenWords = useMemo(() => tokenCount(liveTranscript), [liveTranscript]);
+
+  useEffect(() => {
+    const stored = loadStoredSetup();
+    if (stored) {
+      setScript(stored.script || "");
+      setReferenceVideoUrl(stored.referenceVideoUrl || "");
+      setScriptFeedback(stored.scriptFeedback || null);
+      setMaterialFeedback(stored.materialFeedback || null);
+      setReferenceVideo(stored.referenceVideo || null);
+      setPreparedSignature(stored.preparedSignature || "");
+    }
+    setupRestoredRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!setupRestoredRef.current) return;
+    saveStoredSetup({
+      script,
+      referenceVideoUrl,
+      scriptFeedback,
+      materialFeedback,
+      referenceVideo,
+      preparedSignature,
+    });
+  }, [script, referenceVideoUrl, scriptFeedback, materialFeedback, referenceVideo, preparedSignature]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -706,6 +753,7 @@ function App() {
     setReferenceVideo(null);
     setReferenceVideoUrl("");
     setPreparedSignature("");
+    clearStoredSetup();
     resetRealtimeRefs();
   };
 
@@ -1081,6 +1129,7 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
   const score = report.overall_score ?? 0;
   const quickSummary = buildQuickSummary(report);
   const issueLog = report.issue_log || [];
+  const timelineLog = report.timeline_log || [];
   const priorityFeedback = report.detailed_feedback?.priority_feedback || report.improvements || [];
   const practicePlan = report.detailed_feedback?.practice_plan || [];
   const keywordFeedback = report.keyword_feedback || {};
@@ -1175,14 +1224,34 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
 
       <section className="issue-section">
         <div className="section-heading">
+          <h3>발표 타임라인 로그</h3>
+          <span>{timelineLog.length}개 구간</span>
+        </div>
+        {timelineLog.length ? (
+          <div className="issue-list">
+            {timelineLog.map((issue) => (
+              <IssueItem key={`${issue.time}-${issue.type}-${issue.title}`} issue={issue} />
+            ))}
+          </div>
+        ) : (
+          <p className="issue-empty">아직 전체 타임라인 로그가 생성되지 않았습니다. 이 영역은 발표 전체 구간 로그만 표시합니다.</p>
+        )}
+      </section>
+
+      <section className="issue-section">
+        <div className="section-heading">
           <h3>문제 구간 로그</h3>
           <span>{issueLog.length}개 구간</span>
         </div>
-        <div className="issue-list">
-          {issueLog.map((issue) => (
-            <IssueItem key={`${issue.time}-${issue.type}-${issue.title}`} issue={issue} />
-          ))}
-        </div>
+        {issueLog.length ? (
+          <div className="issue-list">
+            {issueLog.map((issue) => (
+              <IssueItem key={`${issue.time}-${issue.type}-${issue.title}-issue`} issue={issue} />
+            ))}
+          </div>
+        ) : (
+          <p className="issue-empty">눈에 띄는 경고 구간은 따로 잡히지 않았습니다.</p>
+        )}
       </section>
 
       <section className="report-two-column">

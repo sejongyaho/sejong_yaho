@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   BarChart3,
@@ -148,6 +148,23 @@ function userDeliveryLabel(overlap) {
   return "핵심어 부족";
 }
 
+function buildPreparationSignature(script, materialFiles, referenceVideoUrl) {
+  return JSON.stringify({
+    script: script.trim(),
+    referenceVideoUrl: referenceVideoUrl.trim(),
+    materialFiles: materialFiles.map((file) => ({
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      lastModified: file.lastModified,
+    })),
+  });
+}
+
+function looksLikeScriptFile(fileName) {
+  return /(^|[\s._-])(script|speaker.?note|note|notes|manuscript|draft|대본|원고|발표문)([\s._-]|$)/i.test(fileName);
+}
+
 function App() {
   const [page, setPage] = useState("setup");
   const [script, setScript] = useState("");
@@ -173,12 +190,16 @@ function App() {
   const [chat, setChat] = useState([]);
   const [report, setReport] = useState(null);
   const [scriptFeedback, setScriptFeedback] = useState(null);
+  const [materialFeedback, setMaterialFeedback] = useState(null);
   const [aiStatus, setAiStatus] = useState(null);
   const [referenceVideoUrl, setReferenceVideoUrl] = useState("");
   const [referenceVideo, setReferenceVideo] = useState(null);
   const [isLoadingReference, setIsLoadingReference] = useState(false);
+  const [isPreparing, setIsPreparing] = useState(false);
   const [recognitionStatus, setRecognitionStatus] = useState("대기 중");
   const [error, setError] = useState("");
+  const [materialFiles, setMaterialFiles] = useState([]);
+  const [preparedSignature, setPreparedSignature] = useState("");
 
   const recognitionRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -588,6 +609,55 @@ function App() {
     streamRef.current = null;
   };
 
+  const beginPresentation = async () => {
+    const currentSignature = buildPreparationSignature(script, materialFiles, referenceVideoUrl);
+    if (!sessionIdRef.current || preparedSignature !== currentSignature) {
+      setError("발표를 시작하기 전에 대본과 자료 사전 분석을 먼저 다시 받아 주세요.");
+      return;
+    }
+
+    setIsStarting(true);
+    setError("");
+    setReport(null);
+    setTranscriptSegments([]);
+    setInterimTranscript("");
+    setElapsed(0);
+    setWordsPerMinute(0);
+    setSyllablesPerSecond(0);
+    setArticulationSyllablesPerSecond(0);
+    setPauseRatio(0);
+    setSilenceSeconds(0);
+    setSilenceStreak(0);
+    setLongestSilence(0);
+    setChat([]);
+    setSituation("opening");
+    setReaction("attentive");
+    setRecognitionStatus("마이크 준비 중");
+    resetRealtimeRefs();
+
+    setPage("practice");
+    setIsPresenting(true);
+    isPresentingRef.current = true;
+    startTimeRef.current = Date.now();
+    lastRecognizedAtRef.current = Date.now();
+    startRealtimeClock();
+    setupSpeechRecognition();
+
+    try {
+      await setupAudioMeter();
+    } catch {
+      setRecognitionStatus("마이크 권한 필요");
+      setError("마이크 권한을 허용하면 속도와 침묵 분석이 시작됩니다.");
+    }
+
+    metricIntervalRef.current = window.setInterval(() => {
+      postMetric().catch(() => {
+        setError("분석 샘플 전송이 잠시 실패했어요. 발표는 계속 진행됩니다.");
+      });
+    }, 3000);
+    setIsStarting(false);
+  };
+
   const startPresentation = async () => {
     setError("");
     setReport(null);
@@ -596,62 +666,34 @@ function App() {
       return;
     }
 
-    setIsStarting(true);
+    setIsPreparing(true);
     try {
+      const formData = new FormData();
+      formData.append("script", script);
+      formData.append("reference_video_url", referenceVideoUrl.trim());
+      materialFiles.forEach((file) => {
+        formData.append("materials", file);
+      });
       const response = await fetch(`${API_BASE_URL}/api/session/start`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ script, reference_video_url: referenceVideoUrl.trim() || null }),
+        body: formData,
       });
       if (!response.ok) throw new Error("세션을 시작하지 못했습니다.");
       const data = await response.json();
       setSessionId(data.session_id);
       sessionIdRef.current = data.session_id;
       setScriptFeedback(data.script_feedback);
-      setTranscriptSegments([]);
-      setInterimTranscript("");
-      setElapsed(0);
-      setWordsPerMinute(0);
-      setSyllablesPerSecond(0);
-      setArticulationSyllablesPerSecond(0);
-      setPauseRatio(0);
-      setSilenceSeconds(0);
-      setSilenceStreak(0);
-      setLongestSilence(0);
-      setChat([]);
-      setSituation("opening");
-      setReaction("attentive");
-      setRecognitionStatus("마이크 준비 중");
-      resetRealtimeRefs();
-
-      setPage("practice");
-      setIsPresenting(true);
-      isPresentingRef.current = true;
-      startTimeRef.current = Date.now();
-      lastRecognizedAtRef.current = Date.now();
-      startRealtimeClock();
-      setupSpeechRecognition();
-
-      try {
-        await setupAudioMeter();
-      } catch {
-        setRecognitionStatus("마이크 권한 필요");
-        setError("마이크 권한을 허용하면 속도와 침묵 분석이 시작됩니다.");
-      }
-
-      metricIntervalRef.current = window.setInterval(() => {
-        postMetric().catch(() => {
-          setError("분석 샘플 전송이 잠시 실패했어요. 발표는 계속 진행됩니다.");
-        });
-      }, 3000);
+      setMaterialFeedback(data.presentation_material || null);
+      setReferenceVideo(data.reference_video || null);
+      setPreparedSignature(buildPreparationSignature(script, materialFiles, referenceVideoUrl));
     } catch (err) {
       cleanupRecording();
-      setPage("setup");
-      setIsPresenting(false);
-      isPresentingRef.current = false;
+      setSessionId("");
+      sessionIdRef.current = "";
+      setPreparedSignature("");
       setError(err.message || "시작 중 문제가 생겼습니다.");
     } finally {
-      setIsStarting(false);
+      setIsPreparing(false);
     }
   };
 
@@ -678,6 +720,48 @@ function App() {
       setError(err.message || "파일을 읽지 못했습니다. txt, md, pdf, docx, pptx 파일로 다시 시도해 주세요.");
     } finally {
       setIsImporting(false);
+    }
+  };
+
+  const importMixedFiles = async (files) => {
+    const selected = Array.from(files || []);
+    if (!selected.length) return;
+
+    const scriptExtensions = new Set(["txt", "md", "markdown", "text", "csv", "srt", "docx"]);
+    const materialExtensions = new Set(["pdf", "pptx"]);
+    const maxMaterialFileSize = 20 * 1024 * 1024;
+    const acceptedMaterials = [];
+    const directScriptCandidates = [];
+    const hintedScriptCandidates = [];
+
+    for (const file of selected) {
+      const extension = file.name.split(".").pop()?.toLowerCase() || "";
+      if (scriptExtensions.has(extension)) {
+        directScriptCandidates.push(file);
+      }
+      if (materialExtensions.has(extension)) {
+        if (file.size > maxMaterialFileSize) {
+          setError(`"${file.name}" 파일이 20MB 제한을 넘었습니다.`);
+          return;
+        }
+        acceptedMaterials.push(file);
+        if (looksLikeScriptFile(file.name)) {
+          hintedScriptCandidates.push(file);
+        }
+      }
+    }
+
+    const scriptCandidate = directScriptCandidates[0] || hintedScriptCandidates[0] || null;
+
+    if (!scriptCandidate && !acceptedMaterials.length) {
+      setError("대본은 txt, md, docx 같은 문서 파일로, 발표 자료는 PDF 또는 PPTX 파일로 올려 주세요.");
+      return;
+    }
+
+    setError("");
+    setMaterialFiles(acceptedMaterials);
+    if (scriptCandidate) {
+      await importScriptFile(scriptCandidate);
     }
   };
 
@@ -730,6 +814,11 @@ function App() {
     setReaction("attentive");
     setRecognitionStatus("대기 중");
     setError("");
+    setMaterialFiles([]);
+    setMaterialFeedback(null);
+    setReferenceVideo(null);
+    setReferenceVideoUrl("");
+    setPreparedSignature("");
     resetRealtimeRefs();
   };
 
@@ -755,14 +844,20 @@ function App() {
             error={error}
             isImporting={isImporting}
             isStarting={isStarting}
-            importScriptFile={importScriptFile}
+            importMixedFiles={importMixedFiles}
             applyReferenceVideo={applyReferenceVideo}
+            materialFiles={materialFiles}
+            materialFeedback={materialFeedback}
             isLoadingReference={isLoadingReference}
+            isPreparing={isPreparing}
             referenceVideo={referenceVideo}
             referenceVideoUrl={referenceVideoUrl}
+            scriptFeedback={scriptFeedback}
             script={script}
+            sessionPrepared={Boolean(sessionId && preparedSignature === buildPreparationSignature(script, materialFiles, referenceVideoUrl))}
             setReferenceVideoUrl={setReferenceVideoUrl}
             setScript={setScript}
+            beginPresentation={beginPresentation}
             startPresentation={startPresentation}
           />
         )}
@@ -797,6 +892,7 @@ function App() {
             error={error}
             report={report}
             reset={reset}
+            materialFeedback={materialFeedback}
             scriptFeedback={scriptFeedback}
             spokenWords={spokenWords}
           />
@@ -809,16 +905,22 @@ function App() {
 function SetupPage({
   aiStatus,
   error,
-  importScriptFile,
+  importMixedFiles,
   isImporting,
+  isPreparing,
   isStarting,
   applyReferenceVideo,
+  materialFiles,
+  materialFeedback,
   isLoadingReference,
   referenceVideo,
   referenceVideoUrl,
+  scriptFeedback,
   script,
+  sessionPrepared,
   setReferenceVideoUrl,
   setScript,
+  beginPresentation,
   startPresentation,
 }) {
   const [dragging, setDragging] = useState(false);
@@ -830,8 +932,9 @@ function SetupPage({
   const handleDrop = (event) => {
     event.preventDefault();
     setDragging(false);
-    importScriptFile(event.dataTransfer.files?.[0]);
+    importMixedFiles(event.dataTransfer.files);
   };
+
   return (
     <>
       <nav className="brand-nav" aria-label="서비스">
@@ -854,11 +957,17 @@ function SetupPage({
             <span>Pitch up</span>
           </h1>
           <div className="hero-actions">
-            <button className="primary-button" disabled={isStarting} onClick={startPresentation}>
-              {isStarting ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-              발표 시작
+            <button
+              className="primary-button"
+              disabled={isPreparing || isStarting}
+              onClick={sessionPrepared ? beginPresentation : startPresentation}
+            >
+              {isPreparing || isStarting ? <Loader2 className="spin" size={18} /> : sessionPrepared ? <Play size={18} /> : <BarChart3 size={18} />}
+              {isPreparing ? "사전 분석 중" : isStarting ? "발표 시작 중" : sessionPrepared ? "발표 시작" : "사전 분석"}
             </button>
-            <span className="hero-note">마이크 권한은 연습을 시작할 때만 요청합니다.</span>
+            <span className="hero-note">
+              대본과 발표 자료를 같은 칸에 올리고, 사전 분석을 받은 뒤 바로 발표를 시작할 수 있습니다.
+            </span>
           </div>
         </div>
         <div className="script-panel setup-script hero-script" id="script">
@@ -883,7 +992,7 @@ function SetupPage({
           >
             <FileText size={20} />
             <strong>대본이나 발표 자료를 여기에 놓으세요</strong>
-            <span>직접 쓰거나 txt, md, pdf, docx, pptx 파일에서 텍스트를 불러옵니다.</span>
+            <span>대본 파일과 발표 자료 파일을 한 번에 올리면, 대본은 자동으로 읽고 PDF/PPTX는 자료 분석 대상으로 함께 등록합니다.</span>
             <button className="file-button" type="button" disabled={isImporting} onClick={() => fileInputRef.current?.click()}>
               {isImporting ? <Loader2 className="spin" size={17} /> : <Upload size={17} />}
               {isImporting ? "불러오는 중" : "파일 불러오기"}
@@ -892,12 +1001,20 @@ function SetupPage({
               ref={fileInputRef}
               hidden
               type="file"
+              multiple
               accept=".txt,.md,.markdown,.text,.csv,.srt,.pdf,.docx,.pptx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation"
-              onChange={(event) => {
-                importScriptFile(event.target.files?.[0]);
+              onChange={async (event) => {
+                await importMixedFiles(event.target.files);
                 event.target.value = "";
               }}
             />
+            {materialFiles.length ? (
+              <div className="material-file-list">
+                {materialFiles.map((file) => (
+                  <span key={file.name}>{file.name}</span>
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
       </header>
@@ -994,6 +1111,57 @@ function SetupPage({
           </div>
         </aside>
       </section>
+
+      {(scriptFeedback || materialFeedback) ? (
+        <section className="preflight-feedback">
+          <div className="section-heading">
+            <h3>발표 시작 전 피드백</h3>
+            <span>{sessionPrepared ? "분석 완료" : "다시 분석 필요"}</span>
+          </div>
+          <div className="preflight-grid">
+            <article className="preflight-card">
+              <strong>대본 피드백</strong>
+              {scriptFeedback ? (
+                <>
+                  <div className="preflight-score">{scriptFeedback.score ?? 0}점</div>
+                  <p>단어 수 {scriptFeedback.word_count ?? 0}개, 문장 평균 {scriptFeedback.average_sentence_words ?? 0}단어</p>
+                  <ul>
+                    {(scriptFeedback.suggestions || []).slice(0, 3).map((suggestion) => (
+                      <li key={suggestion}>{suggestion}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p>사전 분석을 받으면 대본 전달력 피드백이 여기에 표시됩니다.</p>
+              )}
+            </article>
+
+            <article className="preflight-card">
+              <strong>발표 자료 피드백</strong>
+              {materialFeedback ? (
+                <>
+                  <div className="preflight-metrics">
+                    <span>예상 {materialFeedback.estimated_minutes ?? 0}분</span>
+                    <span>시인성 {materialFeedback.clarity_score ?? 0}</span>
+                    <span>통일성 {materialFeedback.consistency_score ?? 0}</span>
+                    <span>주제 적합도 {materialFeedback.topic_fit_score ?? 0}</span>
+                  </div>
+                  <p>{materialFeedback.summary}</p>
+                  {materialFeedback.notes?.length ? (
+                    <ul>
+                      {materialFeedback.notes.slice(0, 3).map((note) => (
+                        <li key={note}>{note}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </>
+              ) : (
+                <p>발표 자료를 함께 올리면 자료별 시인성과 주제 적합도 피드백이 여기에 표시됩니다.</p>
+              )}
+            </article>
+          </div>
+        </section>
+      ) : null}
     </>
   );
 }
@@ -1068,11 +1236,17 @@ function PracticePage({
         <div className="session-time">{formatTime(elapsed)}</div>
         <button className="danger-button" onClick={finishPresentation} disabled={isFinishing}>
           {isFinishing ? <Loader2 className="spin" size={18} /> : <Square size={16} />}
-          종료
+          {isFinishing ? "발표 정리 중" : "종료"}
         </button>
       </header>
 
       {error && <div className="notice">{error}</div>}
+      {isFinishing ? (
+        <div className="notice loading-banner">
+          <Loader2 className="spin" size={16} />
+          <span>발표 정리 중입니다. 녹음본과 대본, 발표 자료를 분석하고 있어요. 잠시만 기다려 주세요.</span>
+        </div>
+      ) : null}
 
       <div className="practice-layout">
         <section className="stage-card">
@@ -1147,7 +1321,7 @@ function PracticePage({
   );
 }
 
-function ReportPage({ aiStatus, error, report, reset, scriptFeedback, spokenWords }) {
+function ReportPage({ aiStatus, error, report, reset, materialFeedback, scriptFeedback, spokenWords }) {
   return (
     <>
       <header className="product-header compact">
@@ -1162,7 +1336,7 @@ function ReportPage({ aiStatus, error, report, reset, scriptFeedback, spokenWord
       </header>
 
       {error && <div className="notice">{error}</div>}
-      {report ? <Report aiStatus={aiStatus} report={report} scriptFeedback={scriptFeedback} spokenWords={spokenWords} /> : null}
+      {report ? <Report aiStatus={aiStatus} report={report} materialFeedback={materialFeedback} scriptFeedback={scriptFeedback} spokenWords={spokenWords} /> : null}
     </>
   );
 }
@@ -1206,7 +1380,7 @@ function StatusItem({ label, value }) {
   );
 }
 
-function Report({ aiStatus, report, scriptFeedback, spokenWords }) {
+function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWords }) {
   const aiLive = Boolean(report.used_gemini);
   const score = report.overall_score ?? 0;
   const quickSummary = buildQuickSummary(report);
@@ -1214,6 +1388,7 @@ function Report({ aiStatus, report, scriptFeedback, spokenWords }) {
   const priorityFeedback = report.detailed_feedback?.priority_feedback || report.improvements || [];
   const practicePlan = report.detailed_feedback?.practice_plan || [];
   const keywordFeedback = report.keyword_feedback || {};
+  const presentationMaterial = report.presentation_material || materialFeedback || null;
 
   return (
     <section className="report-panel service-report">
@@ -1242,6 +1417,60 @@ function Report({ aiStatus, report, scriptFeedback, spokenWords }) {
         <ScoreDetail label="휴지 비율" value={`${report.silence?.pause_ratio_percent ?? 0}%`} hint="권장 약 15%" />
         <ScoreDetail label="키워드 반영" value={`${keywordFeedback.coverage_percent ?? report.delivery_match?.similarity_percent ?? 0}%`} hint="대본 핵심어 기준" />
       </div>
+
+      {presentationMaterial ? (
+        <section className="material-analysis-card">
+          <div className="section-heading">
+            <h3>발표 자료 분석</h3>
+            <span>{presentationMaterial.overall_score ?? 0}점</span>
+          </div>
+          <div className="detail-score-grid material-grid">
+            <ScoreDetail label="예상 발표 시간" value={`${presentationMaterial.estimated_minutes ?? 0}분`} hint="대본과 자료를 함께 기준으로 계산합니다." />
+            <ScoreDetail label="시인성" value={`${presentationMaterial.clarity_score ?? 0}/100`} hint="글자 크기와 밀도를 봅니다." />
+            <ScoreDetail label="통일성" value={`${presentationMaterial.consistency_score ?? 0}/100`} hint="슬라이드 간 표현 흐름을 봅니다." />
+            <ScoreDetail label="주제 적합도" value={`${presentationMaterial.topic_fit_score ?? 0}/100`} hint="대본과 자료의 핵심 주제가 얼마나 맞는지 봅니다." />
+          </div>
+          <p className="material-summary">{presentationMaterial.summary}</p>
+          {presentationMaterial.notes?.length ? (
+            <ul className="material-notes">
+              {presentationMaterial.notes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          ) : null}
+          {presentationMaterial.files?.length ? (
+            <div className="material-file-cards">
+              {presentationMaterial.files.map((file) => (
+                <article className="material-file-card" key={file.filename}>
+                  <strong>{file.filename}</strong>
+                  <p>{file.summary || "업로드한 발표 자료 분석을 완료했습니다."}</p>
+                  <div className="material-file-meta">
+                    <span>{String(file.kind || "file").toUpperCase()}</span>
+                    <span>{file.page_count || file.slide_count || 0}장</span>
+                    <span>{file.overall_score ?? 0}/100</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {report.reference_video ? (
+        <section className="reference-report">
+          <div className="section-heading">
+            <h3>기준 발표 영상</h3>
+            <span>{report.reference_video.author_name || "YouTube"}</span>
+          </div>
+          <div className="reference-card">
+            <img src={report.reference_video.thumbnail_url} alt="" />
+            <div>
+              <strong>{report.reference_video.title || `YouTube 영상 ${report.reference_video.video_id}`}</strong>
+              <span>{report.reference_video.analysis_note}</span>
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <div className="feedback-columns service-feedback">
         <FeedbackList title="잘한 점" items={(report.strengths || []).slice(0, 4)} />

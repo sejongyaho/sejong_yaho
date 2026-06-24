@@ -1655,6 +1655,9 @@ function visibleReportSummary(report) {
 
 function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWords }) {
   const aiLive = Boolean(report.used_gemini);
+  const analysisMeta = report.analysis_meta || {};
+  const speechHabits = report.speech_habits || {};
+  const scoreVisible = analysisMeta.score_visible !== false;
   const score = report.overall_score ?? 0;
   const quickSummary = buildQuickSummary(report);
   const reportSummary = visibleReportSummary(report);
@@ -1670,14 +1673,14 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
     <section className="report-panel service-report">
       <div className="report-summary-card">
         <div>
-          <p className="eyebrow">{aiLive ? "AI Coaching" : "Basic Coaching"}</p>
-          <h2>{score >= 80 ? "전달력이 좋은 발표였어요" : score >= 60 ? "조금만 다듬으면 더 좋아져요" : "발표 흐름을 다시 잡아보세요"}</h2>
+          <p className="eyebrow">{aiLive ? "AI Coaching" : "Basic Coaching"} · {analysisMeta.summary_label || "정식 결과"}</p>
+          <h2>{!scoreVisible ? "말한 내용이 더 쌓이면 더 정확하게 볼 수 있어요" : score >= 80 ? "전달력이 좋은 발표였어요" : score >= 60 ? "조금만 다듬으면 더 좋아져요" : "발표 흐름을 다시 잡아보세요"}</h2>
           <p>{quickSummary}</p>
           <p className="report-summary-detail">{reportSummary}</p>
         </div>
         <div className="service-score">
-          <strong>{score}</strong>
-          <span>점</span>
+          <strong>{scoreVisible ? score : "-"}</strong>
+          <span>{scoreVisible ? "점" : "예비"}</span>
         </div>
       </div>
 
@@ -1691,7 +1694,28 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         <ScoreDetail label="평균 속도" value={`${report.pace?.syllables_per_second ?? 0} 음절/초`} hint="목표 5.6-6.3" />
         <ScoreDetail label="최장 침묵" value={`${report.silence?.longest_seconds ?? 0}초`} hint="5초 이상이면 위험" />
         <ScoreDetail label="휴지 비율" value={`${report.silence?.pause_ratio_percent ?? 0}%`} hint="권장 약 15%" />
-        <ScoreDetail label="키워드 반영" value={`${keywordFeedback.coverage_percent ?? report.delivery_match?.similarity_percent ?? 0}%`} hint="대본 핵심어 기준" />
+        <ScoreDetail label="말한 단어 수" value={`${analysisMeta.spoken_words ?? report.delivery_match?.spoken_words ?? 0}개`} hint="말한 내용 기준" />
+      </div>
+
+      {report.reference_video ? (
+        <section className="reference-report">
+          <div className="section-heading">
+            <h3>기준 발표 영상</h3>
+            <span>{report.reference_video.author_name || "YouTube"}</span>
+          </div>
+          <div className="reference-card">
+            <img src={report.reference_video.thumbnail_url} alt="" />
+            <div>
+              <strong>{report.reference_video.title || `YouTube 영상 ${report.reference_video.video_id}`}</strong>
+              <span>{report.reference_video.analysis_note}</span>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      <div className="feedback-columns service-feedback">
+        <FeedbackList title="잘한 점" items={strengths} />
+        <FeedbackList title="우선 고칠 점" items={priorityFeedback} />
       </div>
 
       {presentationMaterial ? (
@@ -1732,27 +1756,6 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         </section>
       ) : null}
 
-      {report.reference_video ? (
-        <section className="reference-report">
-          <div className="section-heading">
-            <h3>기준 발표 영상</h3>
-            <span>{report.reference_video.author_name || "YouTube"}</span>
-          </div>
-          <div className="reference-card">
-            <img src={report.reference_video.thumbnail_url} alt="" />
-            <div>
-              <strong>{report.reference_video.title || `YouTube 영상 ${report.reference_video.video_id}`}</strong>
-              <span>{report.reference_video.analysis_note}</span>
-            </div>
-          </div>
-        </section>
-      ) : null}
-
-      <div className="feedback-columns service-feedback">
-        <FeedbackList title="잘한 점" items={strengths} />
-        <FeedbackList title="우선 고칠 점" items={priorityFeedback} />
-      </div>
-
       <section className="issue-section">
         <div className="section-heading">
           <h3>발표 타임라인 로그</h3>
@@ -1787,7 +1790,7 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
 
       <section className="report-two-column">
         <div className="keyword-card">
-          <h3>대본 핵심어 반영</h3>
+          <h3>말한 내용 핵심어</h3>
           <p>말한 내용에서 확인된 핵심어와 빠진 핵심어입니다.</p>
           <KeywordGroup title="반영됨" items={keywordFeedback.covered_keywords || []} />
           <KeywordGroup title="빠짐" items={keywordFeedback.missed_keywords || []} emptyText="크게 빠진 핵심어가 없습니다." />
@@ -1916,17 +1919,20 @@ function userReportSilence(report) {
 }
 
 function userReportDelivery(report) {
-  const match = report.delivery_match?.similarity_percent ?? 0;
-  if (match >= 70) return "잘 맞음";
-  if (match >= 40) return "핵심 유지";
-  return "더 맞추기";
+  const level = report.analysis_meta?.level || "full";
+  const words = report.delivery_match?.spoken_words ?? 0;
+  if (level === "insufficient") return "기록이 적음";
+  if (level === "preliminary") return "간단 점검";
+  if (words >= 120) return "충분함";
+  if (words >= 60) return "보통";
+  return "조금 더 말하기";
 }
 
 function buildQuickSummary(report) {
   const pace = userReportPace(report);
   const silence = userReportSilence(report);
   const delivery = userReportDelivery(report);
-  return `속도는 ${pace}, 침묵은 ${silence} 수준이고 대본 전달은 ${delivery} 상태입니다.`;
+  return `속도는 ${pace}, 침묵은 ${silence} 수준이고 말한 내용의 양은 ${delivery} 상태입니다.`;
 }
 
 export default App;

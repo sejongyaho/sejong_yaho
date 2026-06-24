@@ -2209,7 +2209,7 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         <ResultPill label="내용 전달" value={userReportDelivery(report)} />
       </div>
 
-      <div className="detail-score-grid">
+      <div className="detail-score-grid result-metric-grid">
         <ScoreDetail label="말하기 속도" value={`${report.pace?.syllables_per_second ?? 0} 음절/초`} hint="자연스러운 목표 5.6-6.3" />
         <ScoreDetail label="가장 길게 멈춘 시간" value={`${report.silence?.longest_seconds ?? 0}초`} hint="5초 이상이면 흐름이 끊길 수 있어요" />
         <ScoreDetail label="쉬는 시간 비중" value={`${report.silence?.pause_ratio_percent ?? 0}%`} hint="보통 약 15%가 자연스러워요" />
@@ -2298,7 +2298,7 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         {timelineLog.length ? (
           <div className="issue-list">
             {timelineLog.map((issue) => (
-              <IssueItem key={`${issue.time}-${issue.type}-${issue.title}`} issue={issue} />
+              <IssueItem key={`${issue.time}-${issue.type}-${issue.title}`} issue={issue} compact />
             ))}
           </div>
         ) : (
@@ -2314,7 +2314,7 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         {issueLog.length ? (
           <div className="issue-list">
             {issueLog.map((issue) => (
-              <IssueItem key={`${issue.time}-${issue.type}-${issue.title}-issue`} issue={issue} />
+              <IssueItem key={`${issue.time}-${issue.type}-${issue.title}-issue`} issue={issue} compact />
             ))}
           </div>
         ) : (
@@ -2410,18 +2410,25 @@ function ScoreDetail({ label, value, hint }) {
   );
 }
 
-function IssueItem({ issue }) {
+function compactLogText(text, maxLength = 84) {
+  const value = cleanVisibleText(text);
+  if (!value) return "";
+  return value.length > maxLength ? `${value.slice(0, maxLength).trim()}...` : value;
+}
+
+function IssueItem({ compact = false, issue }) {
+  const evidence = compact ? compactLogText(issue.evidence, 68) : issue.evidence;
+  const excerpt = compact ? compactLogText(issue.spoken_excerpt, 72) : issue.spoken_excerpt;
   return (
-    <article className={`issue-item severity-${issue.severity}`}>
-      <div className="issue-time">{issue.time}</div>
-      <div>
+    <article className={`issue-item severity-${issue.severity} ${compact ? "compact" : ""}`}>
+      <time className="issue-time">{issue.time}</time>
+      <div className="issue-body">
         <div className="issue-title-row">
           <h4>{issue.title}</h4>
           <span>{severityLabel(issue.severity)}</span>
         </div>
-        <p className="issue-evidence">{issue.evidence}</p>
-        <blockquote>{issue.spoken_excerpt}</blockquote>
-        <p className="issue-suggestion">{issue.suggestion}</p>
+        <p className="issue-evidence">{evidence}</p>
+        {excerpt ? <p className="issue-quote">{excerpt}</p> : null}
       </div>
     </article>
   );

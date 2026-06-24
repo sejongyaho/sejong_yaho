@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Loader2, Send, Square } from "lucide-react";
-import { reactionCopy, situationMessages } from "../data/audience";
+import { Loader2, Send, Square } from "lucide-react";
+import { reactionCopy } from "../data/audience";
 import { formatTime, reactionForAudience } from "../utils/presentation";
 import male1AdmireVideo from "../data/남자1-감탄.mp4";
 import male1QuestionVideo from "../data/남자1-의문.mp4";
@@ -496,26 +496,18 @@ export default function PracticePage({
   liveTranscript,
   paceLabel,
   reaction,
-  recognitionStatus,
   script,
   silenceLabel,
   situation,
   transcriptScrollRef,
-  voiceActive,
   volume,
   audienceReactions,
   audienceMetrics,
   deliveryLabel,
 }) {
-  const currentMessage = situationMessages[situation] || situationMessages.opening;
-  const currentStateLabel = reactionCopy[reaction] || currentMessage.state || "상태 확인";
-
   return (
     <>
       <header className="session-header">
-        <button className="icon-button ghost" onClick={backToSetup} title="대본으로 돌아가기">
-          <ArrowLeft size={18} />
-        </button>
         <div>
           <p className="eyebrow">Live Session</p>
           <h1>발표 연습 중</h1>
@@ -531,14 +523,6 @@ export default function PracticePage({
 
       <div className="practice-layout">
         <section className="stage-card">
-          <div className="coach-card">
-            <div className={`voice-dot ${voiceActive ? "active" : ""}`} />
-            <div>
-              <strong>{currentStateLabel}</strong>
-              <p>{recognitionStatus}</p>
-            </div>
-          </div>
-
           <div className="audience-grid practice-audience">
             {audience.map((person, index) => (
               <AudienceTile

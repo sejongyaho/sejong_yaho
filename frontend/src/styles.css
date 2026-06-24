@@ -1693,6 +1693,11 @@ textarea::placeholder {
   margin-top: 14px;
 }
 
+.result-metric-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .score-detail,
 .issue-section,
 .keyword-card,
@@ -1708,6 +1713,12 @@ textarea::placeholder {
   padding: 14px;
 }
 
+.result-metric-grid .score-detail {
+  gap: 5px;
+  min-width: 0;
+  padding: 12px 10px;
+}
+
 .score-detail span,
 .section-heading span {
   color: var(--muted);
@@ -1720,6 +1731,10 @@ textarea::placeholder {
   font-size: 1rem;
 }
 
+.result-metric-grid .score-detail strong {
+  font-size: 0.95rem;
+}
+
 .score-detail p {
   margin: 0;
   color: var(--ink-soft);
@@ -1728,11 +1743,22 @@ textarea::placeholder {
   line-height: 1.45;
 }
 
+.result-metric-grid .score-detail p {
+  font-size: 0.74rem;
+  line-height: 1.32;
+}
+
 .issue-section,
 .keyword-card,
 .practice-plan-card {
   margin-top: 14px;
   padding: 18px;
+}
+
+.issue-section {
+  overflow: hidden;
+  padding: 14px;
+  background: rgba(255, 253, 245, 0.92);
 }
 
 .section-heading,
@@ -1753,8 +1779,8 @@ textarea::placeholder {
 
 .issue-list {
   display: grid;
-  gap: 10px;
-  margin-top: 14px;
+  gap: 7px;
+  margin-top: 12px;
 }
 
 .issue-empty {
@@ -1766,13 +1792,19 @@ textarea::placeholder {
 
 .issue-item {
   display: grid;
-  grid-template-columns: 62px minmax(0, 1fr);
-  gap: 12px;
-  padding: 13px;
-  border: 1px solid var(--line);
-  border-left: 4px solid var(--muted);
-  border-radius: 8px;
-  background: var(--surface-soft);
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 9px 10px;
+  border: 1px solid rgba(216, 206, 193, 0.68);
+  border-left: 3px solid var(--muted);
+  border-radius: 9px;
+  background: rgba(255, 253, 245, 0.86);
+}
+
+.issue-item.compact {
+  grid-template-columns: 54px minmax(0, 1fr);
+  padding: 8px 10px;
 }
 
 .issue-item.severity-high {
@@ -1788,51 +1820,66 @@ textarea::placeholder {
 }
 
 .issue-time {
-  color: var(--ink);
+  display: inline-flex;
+  min-width: 44px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.74rem;
   font-weight: 950;
+  font-style: normal;
 }
 
 .issue-title-row h4,
 .issue-evidence,
-.issue-suggestion,
-.issue-item blockquote {
+.issue-quote {
   margin: 0;
+}
+
+.issue-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 
 .issue-title-row h4 {
   color: var(--ink);
-  font-size: 0.95rem;
+  font-size: 0.9rem;
+  line-height: 1.28;
+}
+
+.issue-item.compact .issue-title-row h4 {
+  font-size: 0.86rem;
 }
 
 .issue-title-row span {
   flex: 0 0 auto;
   border-radius: 999px;
-  background: #fffdf5;
-  padding: 4px 8px;
+  background: var(--surface-soft);
+  padding: 2px 7px;
   color: var(--muted);
-  font-size: 0.74rem;
+  font-size: 0.68rem;
   font-weight: 900;
 }
 
-.issue-evidence,
-.issue-suggestion {
-  margin-top: 8px;
+.issue-evidence {
   color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-weight: 760;
+  line-height: 1.34;
+}
+
+.issue-quote {
+  color: var(--muted);
+  font-size: 0.78rem;
   font-weight: 720;
-  line-height: 1.55;
-}
-
-.issue-item blockquote {
-  margin-top: 10px;
-  border-left: 3px solid var(--line-strong);
-  padding: 8px 10px;
-  background: #fffdf5;
-  color: var(--ink);
-  line-height: 1.55;
-}
-
-.issue-suggestion {
-  font-weight: 900;
+  line-height: 1.32;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .report-two-column {
@@ -3025,6 +3072,10 @@ textarea::placeholder {
     justify-content: flex-start;
   }
 
+  .result-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .script-editor-panel,
   .suggestion-panel {
     min-height: auto;
@@ -3184,7 +3235,11 @@ textarea::placeholder {
   }
 
   .issue-item {
-    grid-template-columns: 1fr;
+    grid-template-columns: 52px minmax(0, 1fr);
+  }
+
+  .issue-item.compact {
+    grid-template-columns: 48px minmax(0, 1fr);
   }
 }
 
@@ -4374,7 +4429,10 @@ textarea::placeholder {
 }
 
 .session-header {
-  min-height: 64px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 58px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
   border-color: #202634;
   background: #111722;
   color: #f7f9fc;
@@ -4392,13 +4450,16 @@ textarea::placeholder {
 }
 
 .practice-layout {
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 350px);
-  align-items: start;
+  --practice-stage-height: 660px;
+  --practice-audience-gap: 22px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+  align-items: stretch;
 }
 
 .stage-card {
-  min-height: 610px;
-  padding: 16px;
+  height: var(--practice-stage-height);
+  min-height: var(--practice-stage-height);
+  padding: 14px;
   border: 1px solid #202938;
   border-radius: 14px;
   background: #0f141d;
@@ -4410,12 +4471,12 @@ textarea::placeholder {
 }
 
 .coach-card {
-  display: inline-grid;
+  display: none !important;
   grid-template-columns: 12px auto;
   width: auto;
   max-width: min(520px, 100%);
-  margin-bottom: 14px;
-  padding: 9px 12px;
+  margin-bottom: 10px;
+  padding: 7px 11px;
   border-color: rgba(255, 255, 255, 0.12);
   border-radius: 999px;
   background: rgba(21, 28, 40, 0.92);
@@ -4424,14 +4485,14 @@ textarea::placeholder {
 
 .coach-card strong {
   color: #f7f9fc;
-  font-size: 0.95rem;
+  font-size: 0.86rem;
   line-height: 1.1;
 }
 
 .coach-card p {
-  margin-top: 2px;
+  margin-top: 1px;
   color: #aab4c3;
-  font-size: 0.76rem;
+  font-size: 0.7rem;
 }
 
 .voice-dot {
@@ -4449,12 +4510,14 @@ textarea::placeholder {
 
 .practice-audience {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: var(--practice-audience-gap);
+  height: 100%;
 }
 
 .practice-audience .audience-tile {
-  min-height: 250px;
-  aspect-ratio: 16 / 10;
+  min-height: 0;
+  aspect-ratio: 16 / 10.4;
   gap: 0;
   padding: 0;
   border-color: rgba(255, 255, 255, 0.09);
@@ -4525,25 +4588,32 @@ textarea::placeholder {
 .practice-audience .mood-focused .audience-info span,
 .practice-audience .mood-bored .audience-info span,
 .practice-audience .mood-confused .audience-info span {
-  background: rgba(255, 255, 255, 0.13);
+  align-self: start;
+  background: rgba(255, 255, 255, 0.14);
   color: #f7f9fc;
 }
 
 .practice-panel {
-  gap: 12px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  height: var(--practice-stage-height);
+  min-height: var(--practice-stage-height);
   padding: 0;
+  opacity: 0.88;
 }
 
 .simple-status,
 .service-chat {
-  border: 1px solid #dde2ea;
+  border: 1px solid rgba(221, 226, 234, 0.38);
   border-radius: 14px;
-  background: #ffffff;
-  box-shadow: 0 12px 30px rgba(20, 30, 45, 0.08);
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: none;
 }
 
 .simple-status {
-  padding: 14px;
+  gap: 8px;
+  padding: 10px;
 }
 
 .simple-status h2,
@@ -4552,27 +4622,37 @@ textarea::placeholder {
 }
 
 .status-item {
-  padding: 11px 12px;
-  border-color: #e5e9f0;
+  gap: 4px;
+  padding: 8px 10px;
+  border-color: rgba(229, 233, 240, 0.58);
   border-radius: 10px;
-  background: #f8fafc;
+  background: rgba(248, 250, 252, 0.62);
+}
+
+.status-item strong {
+  font-size: 1rem;
 }
 
 .chat-card {
-  min-height: 430px;
-  border-color: #dde2ea;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+  max-height: none;
+  border-color: rgba(221, 226, 234, 0.38);
   border-radius: 14px;
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.58);
 }
 
 .chat-list {
-  max-height: 510px;
+  min-height: 0;
+  max-height: none;
 }
 
 .chat-row {
-  border: 1px solid #edf0f5;
+  border: 1px solid rgba(237, 240, 245, 0.68);
   border-radius: 12px;
-  background: #f8fafc;
+  background: rgba(248, 250, 252, 0.78);
 }
 
 .transcript-layout {
@@ -4610,24 +4690,40 @@ textarea::placeholder {
 
 @media (max-width: 980px) {
   .practice-layout {
+    --practice-stage-height: 660px;
     grid-template-columns: 1fr;
   }
 
   .practice-panel {
     grid-template-columns: 1fr;
+    height: var(--practice-stage-height);
+    min-height: var(--practice-stage-height);
   }
 }
 
 @media (max-width: 720px) {
+  .practice-layout {
+    --practice-stage-height: 960px;
+    --practice-audience-gap: 18px;
+  }
+
   .practice-audience {
     grid-template-columns: 1fr;
+    grid-template-rows: repeat(4, minmax(0, 1fr));
   }
 
   .stage-card {
-    min-height: 0;
+    height: var(--practice-stage-height);
+    min-height: var(--practice-stage-height);
   }
 
   .practice-audience .audience-tile {
-    min-height: 220px;
+    min-height: 0;
+    aspect-ratio: auto;
+  }
+
+  .audience-video-shell,
+  .avatarbox {
+    min-height: 0;
   }
 }

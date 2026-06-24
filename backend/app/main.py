@@ -589,8 +589,8 @@ def merge_report_with_fallback(
     merged["presentation_material"] = fallback_report.get("presentation_material")
     merged["audience_reactions"] = fallback_report.get("audience_reactions")
     merged["criteria_basis"] = fallback_report.get("criteria_basis")
-    merged["issue_log"] = report.get("issue_log") or fallback_report.get("issue_log") or []
-    merged["timeline_log"] = report.get("timeline_log") or fallback_report.get("timeline_log") or []
+    merged["issue_log"] = fallback_report.get("issue_log") or report.get("issue_log") or []
+    merged["timeline_log"] = fallback_report.get("timeline_log") or report.get("timeline_log") or []
     merged["reference_video"] = report.get("reference_video") or fallback_report.get("reference_video")
     merged["reference_comparison"] = report.get("reference_comparison") or fallback_report.get("reference_comparison")
 

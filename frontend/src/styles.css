@@ -1802,7 +1802,7 @@ textarea::placeholder {
 
 .issue-item {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: 9px;
   align-items: start;
   padding: 9px 10px;
@@ -1813,7 +1813,7 @@ textarea::placeholder {
 }
 
 .issue-item.compact {
-  grid-template-columns: 54px minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr);
   padding: 8px 10px;
 }
 
@@ -1832,7 +1832,10 @@ textarea::placeholder {
 .issue-time {
   display: inline-flex;
   min-width: 44px;
-  height: 22px;
+  width: max-content;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 3px 10px;
   align-items: center;
   justify-content: center;
   border-radius: 999px;
@@ -1840,7 +1843,10 @@ textarea::placeholder {
   color: var(--muted);
   font-size: 0.74rem;
   font-weight: 950;
+  line-height: 1;
   font-style: normal;
+  white-space: nowrap;
+  box-sizing: border-box;
 }
 
 .issue-title-row h4,
@@ -3027,6 +3033,10 @@ textarea::placeholder {
   line-height: 1.45;
 }
 
+.reference-card span:empty {
+  display: none;
+}
+
 .reference-analysis-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3262,11 +3272,11 @@ textarea::placeholder {
   }
 
   .issue-item {
-    grid-template-columns: 52px minmax(0, 1fr);
+    grid-template-columns: max-content minmax(0, 1fr);
   }
 
   .issue-item.compact {
-    grid-template-columns: 48px minmax(0, 1fr);
+    grid-template-columns: max-content minmax(0, 1fr);
   }
 
   .reference-choice-grid,
@@ -3396,6 +3406,10 @@ textarea::placeholder {
   color: var(--text-muted);
   font-size: 0.78rem;
   font-weight: 800;
+}
+
+.reference-card span:empty {
+  display: none;
 }
 
 .reference-analysis-grid {

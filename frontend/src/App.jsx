@@ -176,15 +176,40 @@ async function buildReferenceVideoPreview(url) {
   const videoId = extractYoutubeVideoId(url);
   const metadata = videoId ? await fetchYoutubeMetadata(url) : {};
   const thumbnail = metadata.thumbnail_url || (videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : "");
-  return {
+  return normalizeReferenceVideoForDisplay({
     ...REFERENCE_VIDEO_TEMPLATE,
     video_id: videoId || REFERENCE_VIDEO_TEMPLATE.video_id,
-    title: metadata.title || (videoId ? "YouTube 기준 영상" : REFERENCE_VIDEO_TEMPLATE.title),
-    author_name: metadata.author_name || REFERENCE_VIDEO_TEMPLATE.author_name,
+    title: metadata.title || (videoId ? "기준 발표 영상" : REFERENCE_VIDEO_TEMPLATE.title),
+    author_name: metadata.author_name || (videoId ? "YouTube 채널" : REFERENCE_VIDEO_TEMPLATE.author_name),
     thumbnail_url: thumbnail,
     source: "youtube",
     source_url: url,
-  };
+  });
+}
+
+function normalizeReferenceVideoForDisplay(referenceVideo) {
+  const normalized = { ...(referenceVideo || {}) };
+  const title = String(normalized.title || "").trim();
+  const author = String(normalized.author_name || "").trim();
+  const note = String(normalized.analysis_note || "").trim();
+
+  if (!title || /^YouTube 영상\s+/i.test(title)) {
+    normalized.title = "기준 발표 영상";
+  }
+
+  if (!author || author === "YouTube") {
+    normalized.author_name = "YouTube 채널";
+  }
+
+  if (
+    note.includes("오디오나 자막을 가져오지 못해")
+    || note.includes("기본 기준으로 설정했습니다")
+    || note.includes("메타데이터를 가져오지 못했지만")
+  ) {
+    normalized.analysis_note = "";
+  }
+
+  return normalized;
 }
 
 function buildUploadedReferenceVideo(file) {
@@ -458,7 +483,7 @@ function App() {
         body: JSON.stringify({ url }),
       });
       if (!response.ok) throw new Error("레퍼런스 영상을 분석하지 못했습니다.");
-      const nextReference = { ...(await response.json()), source: "youtube" };
+      const nextReference = normalizeReferenceVideoForDisplay({ ...(await response.json()), source: "youtube" });
       setReferenceVideo(nextReference);
       return nextReference;
     } catch (err) {

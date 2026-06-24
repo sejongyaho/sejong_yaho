@@ -35,14 +35,17 @@ export function formatReferenceStatus(referenceVideo) {
   return [sourceLabel, pace, wpm].filter(Boolean).join(" · ");
 }
 
-export function getSituation({ elapsed, wordsPerMinute, syllablesPerSecond, silenceStreak, voiceActive, secondsSinceRecognized, overlap }) {
-  if (elapsed < 5) return "opening";
-  if (silenceStreak >= 8) return "longSilence";
-  if (silenceStreak >= 3) return "tooSlow";
-  if (voiceActive && secondsSinceRecognized > 3) return "unclear";
-  if (syllablesPerSecond > 7 || wordsPerMinute > 175) return "tooFast";
-  if (elapsed > 20 && overlap < 0.12) return "offScript";
-  if (syllablesPerSecond >= 5.6 && syllablesPerSecond <= 6.3) return "goodPace";
+export function getSituation({ elapsed, wordsPerMinute, syllablesPerSecond, silenceStreak, voiceActive, secondsSinceRecognized, overlap, wordsSpoken }) {
+  if (elapsed < 6) return "opening";
+  if (voiceActive && secondsSinceRecognized > 4) return "unclear";
+  if (!voiceActive && wordsSpoken === 0 && elapsed > 18) return "tooSlow";
+  if (!voiceActive && wordsSpoken > 2 && silenceStreak >= 8) return "longSilence";
+  if (syllablesPerSecond >= 7.4 || wordsPerMinute >= 185) return "tooFast";
+  if (elapsed > 16 && !voiceActive && silenceStreak >= 5) return "tooSlow";
+  if (elapsed > 16 && wordsSpoken > 6 && syllablesPerSecond > 0 && syllablesPerSecond < 4.5) return "tooSlow";
+  if (elapsed > 25 && overlap < 0.16) return "offScript";
+  if (elapsed > 12 && syllablesPerSecond >= 5.5 && syllablesPerSecond <= 6.5 && overlap >= 0.38) return "impressed";
+  if (syllablesPerSecond >= 4.9 && syllablesPerSecond <= 7.0) return "focused";
   return "opening";
 }
 
@@ -86,11 +89,51 @@ export function looksLikeScriptFile(fileName) {
   return /(^|[\s._-])(script|speaker.?note|note|notes|manuscript|draft|대본|원고|발표문)([\s._-]|$)/i.test(fileName);
 }
 
-export function softenReaction(reaction, index) {
-  if (reaction === "tooFast" && index === 2) return "confused";
-  if (reaction === "tooSlow" && index === 1) return "sleepy";
-  if (reaction === "excited" && index === 3) return "attentive";
-  return reaction;
+export function reactionForAudience(person, baseSituation, metrics) {
+  const profile = person.stateProfile || "supportive";
+  const {
+    elapsed = 0,
+    wordsPerMinute = 0,
+    syllablesPerSecond = 0,
+    silenceStreak = 0,
+    voiceActive = false,
+    secondsSinceRecognized = 0,
+    overlap = 0,
+    wordsSpoken = 0,
+  } = metrics || {};
+
+  if (elapsed < 6) return "attentive";
+
+  if (profile === "analytical") {
+    if (voiceActive && secondsSinceRecognized > 4) return "confused";
+    if (syllablesPerSecond >= 7.1 || wordsPerMinute >= 178) return "tooFast";
+    if (elapsed > 22 && wordsSpoken > 8 && overlap < 0.2) return "confused";
+    if ((baseSituation === "impressed" && overlap >= 0.38) || (baseSituation === "focused" && overlap >= 0.48 && wordsSpoken >= 14)) return "excited";
+    return baseSituation === "focused" || baseSituation === "impressed" ? "attentive" : reactionFromSituation(baseSituation);
+  }
+
+  if (profile === "expressive") {
+    if (baseSituation === "impressed" || (overlap >= 0.35 && syllablesPerSecond >= 4.6 && syllablesPerSecond <= 7.1)) return "excited";
+    if (baseSituation === "offScript") return "confused";
+    if (baseSituation === "tooFast" && syllablesPerSecond >= 7.8) return "confused";
+    if (baseSituation === "longSilence" && silenceStreak >= 9) return "sleepy";
+    return "attentive";
+  }
+
+  if (profile === "calm") {
+    if (!voiceActive && silenceStreak >= 6) return "sleepy";
+    if (baseSituation === "tooSlow" && elapsed > 18) return "sleepy";
+    if (baseSituation === "tooFast") return "attentive";
+    if (baseSituation === "unclear") return "confused";
+    if ((baseSituation === "focused" || baseSituation === "impressed") && overlap >= 0.42 && wordsSpoken >= 10) return "excited";
+    return "attentive";
+  }
+
+  if (baseSituation === "longSilence" && silenceStreak >= 9) return "sleepy";
+  if (baseSituation === "unclear" && voiceActive) return "confused";
+  if (baseSituation === "tooFast" && syllablesPerSecond >= 7.8) return "tooFast";
+  if ((baseSituation === "impressed" && overlap >= 0.35) || (baseSituation === "focused" && overlap >= 0.42 && wordsSpoken >= 10)) return "excited";
+  return "attentive";
 }
 
 export function formatTime(seconds) {

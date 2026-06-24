@@ -3,6 +3,7 @@ import base64
 import json
 import mimetypes
 import os
+import random
 import re
 import subprocess
 import tempfile
@@ -20,7 +21,6 @@ from uuid import uuid4
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 try:
     from pypdf import PdfReader
@@ -44,12 +44,23 @@ from .config import (
     MAX_VISION_MATERIAL_IMAGES,
     MAX_VISION_PAGES_PER_FILE,
     MAX_SCRIPT_FILE_BYTES,
+    OPENAI_AUDIENCE_MAX_SESSION_CALLS,
+    OPENAI_AUDIENCE_MIN_INTERVAL_SECONDS,
+    OPENAI_AUDIENCE_MODEL,
     TEXT_EXTENSIONS,
     SUPPORTED_SCRIPT_EXTENSIONS,
     get_gemini_model,
 )
-from .models import FinishSessionRequest, GeminiRateLimitError, ImportedScriptResponse, MetricSample, SessionState
-from .runtime_state import ai_status_cache, gemini_limiter, gemini_runtime_state, sessions
+from .models import AudienceChatRequest, FinishSessionRequest, GeminiRateLimitError, ImportedScriptResponse, MetricSample, SessionState
+from .runtime_state import (
+    ai_status_cache,
+    audience_agent_sessions,
+    gemini_limiter,
+    gemini_runtime_state,
+    openai_audience_limiter,
+    openai_runtime_state,
+    sessions,
+)
 from .session_store import append_metric as persist_metric
 from .session_store import init_session_store, load_session as load_persisted_session, save_session
 from .services.gemini_service import call_gemini_api
@@ -100,6 +111,319 @@ def get_session_state(session_id: str) -> SessionState | None:
     if restored_session:
         sessions[session_id] = restored_session
     return restored_session
+
+
+AUDIENCE_AGENTS = {
+    "민서": {
+        "role": "공감형 청중",
+        "reaction": "attentive",
+        "prompt": (
+            "너는 공감형 청중 민서다. 발표자의 긴장을 낮춰주는 따뜻한 말투를 쓴다. "
+            "칭찬을 먼저 짧게 하고, 필요하면 바로 적용할 수 있는 작은 조언 하나만 덧붙인다."
+        ),
+        "fallback": {
+            "opening": "좋아요. 첫 문장만 천천히 잡고 들어가면 더 안정적이에요.",
+            "focused": "지금 흐름 좋아요. 이 속도 그대로 핵심어만 살려주세요.",
+            "impressed": "방금 전달이 잘 됐어요. 그 톤으로 이어가면 좋아요.",
+            "longSilence": "잠깐 멈췄지만 괜찮아요. 다음 핵심 문장으로 이어가면 돼요.",
+            "default": "전달은 잡혀 있어요. 다음 문장 첫 단어만 더 또렷하게 시작해보세요.",
+        },
+    },
+    "준": {
+        "role": "분석형 청중",
+        "reaction": "tooFast",
+        "prompt": (
+            "너는 분석형 청중 준이다. 말투는 차분하고 구체적이다. "
+            "속도, 침묵, 핵심어 중 하나를 근거로 짧은 피드백을 준다. 감탄보다 수정 포인트가 중요하다."
+        ),
+        "fallback": {
+            "tooFast": "속도가 올라갔어요. 핵심어 앞에서 반 박자만 늦춰주세요.",
+            "unclear": "문장 끝이 살짝 흐립니다. 끝 음절을 조금만 더 닫아주세요.",
+            "offScript": "대본 핵심어가 약해졌어요. 주제어를 한 번 다시 꺼내주세요.",
+            "default": "지표는 괜찮습니다. 한 문장 안의 속도만 더 일정하게 가보세요.",
+        },
+    },
+    "하린": {
+        "role": "표현형 청중",
+        "reaction": "excited",
+        "prompt": (
+            "너는 표현형 청중 하린이다. 생동감 있고 몰입감 있는 반응을 한다. "
+            "청중 입장에서 어디가 잘 들렸는지, 어디를 더 강조하면 좋은지 감각적으로 말한다."
+        ),
+        "fallback": {
+            "focused": "지금 리듬 좋아요. 중요한 단어에 힘을 조금 더 주세요.",
+            "impressed": "방금 구간은 잘 들어왔어요. 그 포인트를 한 번 더 밀어주세요.",
+            "offScript": "이야기 방향이 살짝 퍼졌어요. 제목 키워드로 다시 모아보면 좋아요.",
+            "tooSlow": "리듬이 조금 처졌어요. 다음 문장은 더 밝게 밀고 가봐요.",
+            "default": "톤은 좋아요. 포인트 문장 하나만 더 선명하게 들려주세요.",
+        },
+    },
+    "도윤": {
+        "role": "차분형 청중",
+        "reaction": "tooSlow",
+        "prompt": (
+            "너는 차분형 청중 도윤이다. 과장하지 않고 안정적인 말투를 쓴다. "
+            "호흡, 쉬는 타이밍, 복구 문장처럼 발표 흐름을 정돈하는 피드백을 준다."
+        ),
+        "fallback": {
+            "tooSlow": "호흡이 길어졌어요. 다음 문장으로 조금 더 빨리 넘어가도 좋습니다.",
+            "longSilence": "침묵이 길었습니다. 준비한 연결 문장으로 바로 회복해보세요.",
+            "unclear": "소리는 들리지만 문장 경계가 약해요. 짧게 끊어 말해보세요.",
+            "default": "전체 흐름은 차분합니다. 쉬는 위치만 조금 더 의도적으로 잡아보세요.",
+        },
+    },
+}
+
+SITUATION_AGENT_POOL = {
+    "opening": ["민서", "도윤"],
+    "focused": ["도윤", "민서"],
+    "impressed": ["하린", "민서"],
+    "tooFast": ["준", "도윤"],
+    "tooSlow": ["도윤", "하린"],
+    "longSilence": ["도윤", "민서"],
+    "unclear": ["준", "민서"],
+    "offScript": ["준", "하린"],
+}
+
+SITUATION_REACTIONS = {
+    "opening": "attentive",
+    "focused": "attentive",
+    "impressed": "excited",
+    "tooFast": "tooFast",
+    "tooSlow": "sleepy",
+    "longSilence": "sleepy",
+    "unclear": "confused",
+    "offScript": "confused",
+}
+
+AUDIENCE_STATE_CRITERIA = {
+    "opening": "평상: 발표 시작 직후이거나 아직 충분한 발화 데이터가 쌓이지 않은 상태입니다.",
+    "focused": "집중: 속도와 침묵이 안정적이고 대본 핵심어가 어느 정도 유지되는 상태입니다.",
+    "impressed": "감탄: 속도가 적절하고 핵심어 반영도가 높아 청중이 몰입하기 좋은 상태입니다.",
+    "tooFast": "의문: 말 속도가 빨라 핵심어가 지나가거나 청중이 따라가기 어려운 상태입니다.",
+    "tooSlow": "졸림: 느린 진행이나 짧은 침묵 누적으로 청중 집중도가 내려가는 상태입니다.",
+    "longSilence": "졸림: 긴 침묵이 이어져 청중 집중도가 크게 내려가는 상태입니다.",
+    "unclear": "의문: 목소리는 감지되지만 음성 인식 결과가 충분히 따라오지 않는 상태입니다.",
+    "offScript": "의문: 현재 발화가 대본의 핵심어와 멀어져 메시지가 흐려지는 상태입니다.",
+}
+
+AUDIENCE_AGENT_STATE_CRITERIA = {
+    "민서": "공감형 청중입니다. 짧은 실수에는 바로 부정적으로 반응하지 않고, 긴 침묵이나 명확한 이탈이 이어질 때만 걱정합니다.",
+    "준": "분석형 청중입니다. 빠른 속도, 불명확한 발음, 대본 핵심어 이탈에 가장 민감하게 반응합니다.",
+    "하린": "표현형 청중입니다. 핵심어가 잘 들어오고 리듬이 살아날 때 가장 빠르게 감탄합니다.",
+    "도윤": "차분형 청중입니다. 침묵, 느린 진행, 호흡의 늘어짐에 가장 민감하게 반응합니다.",
+}
+
+SITUATION_FALLBACK_TEXT = {
+    "opening": "좋아요. 첫 문장만 천천히 잡고 들어가면 더 안정적이에요.",
+    "focused": "지금 흐름이 안정적이에요. 이 리듬을 유지해 주세요.",
+    "impressed": "방금 포인트가 잘 들어왔어요. 중요한 단어에 힘을 더 주세요.",
+    "tooFast": "속도가 올라갔어요. 핵심어 앞에서 반 박자만 늦춰주세요.",
+    "tooSlow": "호흡이 길어졌어요. 다음 문장으로 조금 더 빨리 넘어가도 좋습니다.",
+    "longSilence": "침묵이 길었습니다. 준비한 연결 문장으로 바로 회복해보세요.",
+    "unclear": "문장 끝이 살짝 흐립니다. 끝 음절을 조금만 더 또렷하게 닫아주세요.",
+    "offScript": "대본 핵심어가 약해졌어요. 주제어를 한 번 다시 꺼내주세요.",
+}
+
+
+def choose_audience_agent(session_id: str, situation: str) -> str:
+    state = audience_agent_sessions.setdefault(session_id, {"last_agent": "", "last_call_at": 0.0, "llm_calls": 0})
+    pool = SITUATION_AGENT_POOL.get(situation, list(AUDIENCE_AGENTS))
+    if random.random() < 0.25:
+        pool = list(AUDIENCE_AGENTS)
+    candidates = [name for name in pool if name != state.get("last_agent")] or pool
+    name = random.choice(candidates)
+    state["last_agent"] = name
+    return name
+
+
+def requested_audience_agent(request: AudienceChatRequest) -> str | None:
+    if not request.audience_name:
+        return None
+    candidate = request.audience_name.strip()
+    return candidate if candidate in AUDIENCE_AGENTS else None
+
+
+def fallback_audience_chat(session_id: str, request: AudienceChatRequest, reason: str = "fallback") -> dict[str, Any]:
+    agent_name = requested_audience_agent(request) or choose_audience_agent(session_id, request.situation)
+    agent = AUDIENCE_AGENTS[agent_name]
+    text = (
+        agent["fallback"].get(request.situation)
+        or SITUATION_FALLBACK_TEXT.get(request.situation)
+        or agent["fallback"].get("default", "좋아요. 핵심 문장만 더 선명하게 이어가 보세요.")
+    )
+    return {
+        "id": f"{int(time.time() * 1000)}-{request.situation}-{agent_name}",
+        "name": agent_name,
+        "role": agent["role"],
+        "text": text,
+        "reaction": request.reaction or SITUATION_REACTIONS.get(request.situation, agent["reaction"]),
+        "source": reason,
+        "model": None,
+    }
+
+
+def should_call_audience_llm(session_id: str, force: bool = False) -> tuple[bool, str]:
+    state = audience_agent_sessions.setdefault(session_id, {"last_agent": "", "last_call_at": 0.0, "llm_calls": 0})
+    now = time.monotonic()
+    if state.get("llm_calls", 0) >= OPENAI_AUDIENCE_MAX_SESSION_CALLS:
+        return False, "session_limit"
+    if not force and now - state.get("last_call_at", 0.0) < OPENAI_AUDIENCE_MIN_INTERVAL_SECONDS:
+        return False, "session_throttle"
+
+    allowed, retry_after, _remaining = openai_audience_limiter.allow()
+    if not allowed:
+        return False, f"global_throttle:{retry_after:.1f}"
+
+    state["last_call_at"] = now
+    state["llm_calls"] = state.get("llm_calls", 0) + 1
+    return True, "allowed"
+
+
+def build_audience_prompt(session: SessionState, agent_name: str, request: AudienceChatRequest) -> str:
+    agent = AUDIENCE_AGENTS[agent_name]
+    transcript_excerpt = compact_text(request.transcript, 700)
+    current_spoken_excerpt = compact_text(request.current_excerpt, 220) or recent_excerpt(request.transcript, 180)
+    script_excerpt = compact_text(session.script, 700)
+    return json.dumps(
+        {
+            "agent": {
+                "name": agent_name,
+                "role": agent["role"],
+                "requested_role": request.audience_role or agent["role"],
+                "personality_prompt": agent["prompt"],
+                "state_sensitivity": AUDIENCE_AGENT_STATE_CRITERIA.get(agent_name, ""),
+            },
+            "task": (
+                "당신은 발표장을 보고 있는 실제 참석자입니다. 한국어 채팅 한 줄만 작성하세요. "
+                "반드시 발표자를 '발표자님'이라고 부르세요. "
+                "앱 분석 문장처럼 말하지 말고, 참석자가 발표자님에게 직접 말하듯 자연스럽게 말하세요. "
+                "current_spoken_excerpt와 delivery_metrics를 보고 지금 들은 내용, 속도, 침묵, 대본 흐름 중 하나를 쉬운 말로 짚으세요. "
+                "force_positive가 true이면 좋은 점을 먼저 말하고, 그대로 유지할 포인트를 하나만 덧붙이세요. "
+                "문제가 있는 상태면 무엇이 아쉬웠는지와 바로 고칠 행동 하나를 짧게 말하세요. "
+                "45자 안팎으로, 설명문·따옴표·이모지·마크다운 없이 채팅처럼 쓰세요."
+            ),
+            "presentation_state": {
+                "situation": request.situation,
+                "audience_reaction": request.reaction,
+                "state_criteria": AUDIENCE_STATE_CRITERIA.get(request.situation, "현재 발표 흐름에 맞춘 청중 반응 상태입니다."),
+                "elapsed_seconds": round(request.elapsed_seconds, 1),
+                "words_per_minute": round(request.words_per_minute, 1),
+                "syllables_per_second": round(request.syllables_per_second, 2),
+                "pause_ratio_percent": round(request.pause_ratio * 100, 1),
+                "silence_streak_seconds": round(request.silence_streak, 1),
+                "script_overlap_percent": round(request.overlap * 100, 1),
+            },
+            "delivery_metrics": {
+                "voice_active": request.voice_active,
+                "seconds_since_recognized": round(request.seconds_since_recognized, 1),
+                "words_spoken": request.words_spoken,
+                "pace_hint": (
+                    "빠름"
+                    if request.syllables_per_second >= 7.0 or request.words_per_minute >= 180
+                    else "느림"
+                    if request.syllables_per_second > 0 and request.syllables_per_second < 4.5
+                    else "안정"
+                ),
+                "pause_hint": "긴 침묵" if request.silence_streak >= 6 else "안정",
+                "script_hint": "대본 핵심어 약함" if request.overlap < 0.2 and request.words_spoken >= 8 else "대본 흐름 유지",
+                "force_positive": request.force_positive,
+            },
+            "script_excerpt": script_excerpt,
+            "current_spoken_excerpt": current_spoken_excerpt,
+            "spoken_excerpt": transcript_excerpt,
+        },
+        ensure_ascii=False,
+    )
+
+
+def extract_openai_text(data: dict[str, Any]) -> str:
+    if data.get("output_text"):
+        return str(data["output_text"]).strip()
+    for output in data.get("output", []):
+        for content in output.get("content", []):
+            if content.get("type") in {"output_text", "text"} and content.get("text"):
+                return str(content["text"]).strip()
+    return ""
+
+
+def mark_openai_success(kind: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    openai_runtime_state["last_live"] = True
+    openai_runtime_state["last_ok_at"] = now
+    openai_runtime_state["last_call_kind"] = kind
+    openai_runtime_state["last_error_code"] = None
+    openai_runtime_state["last_error_message"] = None
+
+
+def mark_openai_error(kind: str, message: str, status_code: int | None = None) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    openai_runtime_state["last_live"] = False
+    openai_runtime_state["last_error_at"] = now
+    openai_runtime_state["last_call_kind"] = kind
+    openai_runtime_state["last_error_code"] = status_code
+    openai_runtime_state["last_error_message"] = compact_text(message, 500)
+
+
+async def build_audience_chat(session_id: str, session: SessionState, request: AudienceChatRequest) -> dict[str, Any]:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        mark_openai_error("audience_chat", "OPENAI_API_KEY is not configured")
+        return fallback_audience_chat(session_id, request, "no_openai_key")
+
+    can_call, reason = should_call_audience_llm(session_id, request.force)
+    if not can_call:
+        mark_openai_error("audience_chat", reason, 429 if "throttle" in reason or "limit" in reason else None)
+        return fallback_audience_chat(session_id, request, reason)
+
+    agent_name = requested_audience_agent(request) or choose_audience_agent(session_id, request.situation)
+    agent = AUDIENCE_AGENTS[agent_name]
+    payload = {
+        "model": OPENAI_AUDIENCE_MODEL,
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "You create live audience feedback for a Korean presentation practice app. "
+                    "Speak as the named audience member, directly to the presenter. "
+                    "Always address the presenter as '발표자님' in the Korean message. "
+                    "Use plain, friendly Korean that a user can immediately understand. "
+                    "Output one natural Korean chat message only. No JSON, no markdown."
+                ),
+            },
+            {"role": "user", "content": build_audience_prompt(session, agent_name, request)},
+        ],
+        "temperature": 0.85,
+        "max_output_tokens": 80,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            response.raise_for_status()
+            text = clean_user_text(extract_openai_text(response.json()))
+            if not text:
+                raise ValueError("empty OpenAI audience response")
+            mark_openai_success("audience_chat")
+            return {
+                "id": f"{int(time.time() * 1000)}-{request.situation}-{agent_name}",
+                "name": agent_name,
+                "role": agent["role"],
+                "text": compact_text(text, 90),
+                "reaction": request.reaction or SITUATION_REACTIONS.get(request.situation, agent["reaction"]),
+                "source": "openai",
+                "model": OPENAI_AUDIENCE_MODEL,
+            }
+    except httpx.HTTPStatusError as exc:
+        mark_openai_error("audience_chat", exc.response.text[:500] or f"HTTP {exc.response.status_code}", exc.response.status_code)
+        return fallback_audience_chat(session_id, request, "openai_error")
+    except Exception:
+        mark_openai_error("audience_chat", "OpenAI request failed")
+        return fallback_audience_chat(session_id, request, "openai_error")
 
 
 def build_overlap_ratio(script_tokens: set[str], transcript: str) -> float:
@@ -1548,6 +1872,91 @@ async def ai_status(probe: bool = False) -> dict[str, Any]:
         ai_status_cache["payload"] = result
         return result
 
+
+@app.get("/api/openai/status")
+async def openai_status(probe: bool = False) -> dict[str, Any]:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    model = OPENAI_AUDIENCE_MODEL
+    if not api_key:
+        return {
+            "configured": False,
+            "live": False,
+            "model": model,
+            "message": "OPENAI_API_KEY가 비어 있어 관객 채팅은 기본 문구로 대체됩니다.",
+        }
+
+    base_payload = {
+        "configured": True,
+        "live": openai_runtime_state.get("last_live"),
+        "model": model,
+        "remaining_calls": openai_audience_limiter.remaining(),
+        "last_ok_at": openai_runtime_state.get("last_ok_at"),
+        "last_error_at": openai_runtime_state.get("last_error_at"),
+        "last_error_code": openai_runtime_state.get("last_error_code"),
+        "last_error_message": openai_runtime_state.get("last_error_message"),
+        "last_call_kind": openai_runtime_state.get("last_call_kind"),
+    }
+    if not probe:
+        return {
+            **base_payload,
+            "checked_live": False,
+            "message": "OpenAI API 키가 설정되어 있습니다. 실제 연결은 관객 채팅 또는 probe에서 확인합니다.",
+        }
+
+    payload = {
+        "model": model,
+        "input": "Return OK.",
+        "max_output_tokens": 16,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=12) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            response.raise_for_status()
+            text = extract_openai_text(response.json())
+            mark_openai_success("status_probe")
+            return {
+                **base_payload,
+                "live": bool(text),
+                "checked_live": True,
+                "last_ok_at": openai_runtime_state.get("last_ok_at"),
+                "last_error_code": None,
+                "last_error_message": None,
+                "message": "OpenAI API 연결이 정상입니다.",
+            }
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        detail = exc.response.text[:500]
+        mark_openai_error("status_probe", detail or f"HTTP {status_code}", status_code)
+        if status_code == 429:
+            message = "OpenAI API 할당량 또는 요청 제한을 확인해야 합니다."
+        elif status_code in {401, 403}:
+            message = "OpenAI API 키 권한을 확인해야 합니다."
+        elif status_code == 404:
+            message = f"OpenAI 모델 '{model}'을 사용할 수 없습니다. 모델명을 확인해 주세요."
+        else:
+            message = f"OpenAI API 연결 확인에 실패했습니다. 상태 코드: {status_code}"
+        return {
+            **base_payload,
+            "live": False,
+            "checked_live": True,
+            "last_error_code": status_code,
+            "last_error_message": openai_runtime_state.get("last_error_message"),
+            "message": message,
+        }
+    except Exception as exc:
+        mark_openai_error("status_probe", str(exc))
+        return {
+            **base_payload,
+            "live": False,
+            "checked_live": True,
+            "last_error_message": openai_runtime_state.get("last_error_message"),
+            "message": "OpenAI API 연결을 확인하지 못했습니다. 네트워크 또는 키 설정을 확인해 주세요.",
+        }
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -1669,6 +2078,14 @@ def add_metric(session_id: str, sample: MetricSample) -> dict[str, str]:
     session.samples.append(sample)
     persist_metric(session_id, sample)
     return {"status": "stored"}
+
+
+@app.post("/api/session/{session_id}/audience/chat")
+async def create_audience_chat(session_id: str, request: AudienceChatRequest) -> dict[str, Any]:
+    session = get_session_state(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return await build_audience_chat(session_id, session, request)
 
 
 @app.post("/api/session/{session_id}/finish")

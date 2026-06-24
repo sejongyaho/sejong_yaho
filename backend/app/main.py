@@ -5,22 +5,35 @@ import mimetypes
 import os
 import re
 import tempfile
+import time
 import xml.etree.ElementTree as ET
-from pathlib import Path
-from html import unescape
+from collections import deque
 from datetime import datetime, timezone
+from html import unescape
 from io import BytesIO
+from pathlib import Path
 from statistics import mean, pstdev
+from threading import Lock
 from typing import Any
 from uuid import uuid4
 
 import httpx
 from docx import Document
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pptx import Presentation
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
+
+try:
+    from pypdf import PdfReader
+except ImportError:  # pragma: no cover - handled gracefully at runtime
+    PdfReader = None
+
+try:
+    from pptx import Presentation
+except ImportError:  # pragma: no cover - handled gracefully at runtime
+    Presentation = None
 
 
 class StartSessionRequest(BaseModel):
@@ -59,8 +72,41 @@ class SessionState(BaseModel):
     id: str
     script: str
     created_at: str
-    reference_video: dict[str, Any] | None = None
     samples: list[MetricSample] = Field(default_factory=list)
+    materials: list[dict[str, Any]] = Field(default_factory=list)
+    reference_video: dict[str, Any] | None = None
+
+
+class GeminiCallLimiter:
+    def __init__(self, max_calls: int, window_seconds: int) -> None:
+        self.max_calls = max_calls
+        self.window_seconds = window_seconds
+        self._calls: deque[float] = deque()
+        self._lock = Lock()
+
+    def allow(self) -> tuple[bool, float, int]:
+        now = time.monotonic()
+        with self._lock:
+            while self._calls and now - self._calls[0] >= self.window_seconds:
+                self._calls.popleft()
+
+            if len(self._calls) >= self.max_calls:
+                retry_after = max(0.0, self.window_seconds - (now - self._calls[0]))
+                return False, retry_after, 0
+
+            self._calls.append(now)
+            remaining = max(0, self.max_calls - len(self._calls))
+            return True, 0.0, remaining
+
+
+MAX_PRESENTATION_UPLOAD_BYTES = int(os.getenv("MAX_PRESENTATION_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+MAX_PRESENTATION_UPLOAD_FILES = int(os.getenv("MAX_PRESENTATION_UPLOAD_FILES", "4"))
+GEMINI_RATE_WINDOW_SECONDS = int(os.getenv("GEMINI_RATE_WINDOW_SECONDS", "3600"))
+GEMINI_MAX_CALLS_PER_WINDOW = int(os.getenv("GEMINI_MAX_CALLS_PER_WINDOW", "6"))
+GEMINI_STATUS_CACHE_SECONDS = int(os.getenv("GEMINI_STATUS_CACHE_SECONDS", "600"))
+
+gemini_limiter = GeminiCallLimiter(GEMINI_MAX_CALLS_PER_WINDOW, GEMINI_RATE_WINDOW_SECONDS)
+ai_status_cache: dict[str, Any] = {"checked_at": 0.0, "payload": None}
 
 
 app = FastAPI(title="Presentation Practice API")
@@ -884,6 +930,303 @@ def presentation_criteria() -> dict[str, Any]:
     }
 
 
+def extract_youtube_video_id(url: str) -> str | None:
+    patterns = [
+        r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/shorts/)([A-Za-z0-9_-]{11})",
+        r"youtube\.com/watch\?.*?[?&]v=([A-Za-z0-9_-]{11})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+
+async def build_reference_video(url: str | None) -> dict[str, Any] | None:
+    if not url or not url.strip():
+        return None
+
+    clean_url = url.strip()
+    video_id = extract_youtube_video_id(clean_url)
+    if not video_id:
+        raise HTTPException(status_code=400, detail="올바른 YouTube 영상 주소를 입력해 주세요.")
+
+    reference = {
+        "url": clean_url,
+        "video_id": video_id,
+        "embed_url": f"https://www.youtube.com/embed/{video_id}",
+        "title": f"YouTube 영상 {video_id}",
+        "author_name": "YouTube",
+        "thumbnail_url": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+        "benchmark_targets": {
+            "speech_rate": "기준 영상처럼 또렷한 말하기 속도를 목표로 봅니다.",
+            "speaking_style": "기준 발표자의 화법처럼 차분하고 설명적인 흐름인지 봅니다.",
+            "pause_timing": "기준 영상처럼 중요한 의미 단위 뒤에 쉬는 타이밍이 있는지 봅니다.",
+            "emphasis": "기준 영상처럼 핵심어를 분명하게 강조하는지 봅니다.",
+        },
+        "analysis_note": "YouTube URL을 기준 발표로 등록했습니다. 대본과 발표 흐름을 비교할 때 참고합니다.",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.get(
+                "https://www.youtube.com/oembed",
+                params={"url": clean_url, "format": "json"},
+            )
+            response.raise_for_status()
+            data = response.json()
+            reference["title"] = data.get("title") or reference["title"]
+            reference["author_name"] = data.get("author_name") or reference["author_name"]
+            reference["thumbnail_url"] = data.get("thumbnail_url") or reference["thumbnail_url"]
+    except Exception:
+        reference["analysis_note"] = "YouTube 메타데이터를 가져오지 못했지만 기준 영상 등록은 유지됩니다."
+
+    return reference
+
+
+def normalize_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def split_text_units(text: str) -> list[str]:
+    units = [part.strip() for part in re.split(r"\n{2,}|(?<=[.!?。！？])\s+", text) if part.strip()]
+    if units:
+        return units
+    compact = normalize_whitespace(text)
+    return [compact] if compact else []
+
+
+def file_kind(filename: str, content_type: str | None) -> str:
+    extension = os.path.splitext(filename.lower())[1]
+    if extension == ".pdf" or (content_type and "pdf" in content_type):
+        return "pdf"
+    if extension == ".pptx" or (content_type and "presentation" in content_type):
+        return "pptx"
+    return "unknown"
+
+
+def extract_pdf_text(data: bytes) -> tuple[str, int, list[str]]:
+    if PdfReader is None:
+        return "", 0, ["PDF 텍스트 추출 라이브러리가 설치되지 않았습니다."]
+
+    notes: list[str] = []
+    try:
+        reader = PdfReader(BytesIO(data))
+        texts: list[str] = []
+        for index, page in enumerate(reader.pages):
+            if index >= 80:
+                notes.append("앞쪽 80페이지만 분석했습니다.")
+                break
+            try:
+                texts.append(page.extract_text() or "")
+            except Exception:
+                texts.append("")
+        return "\n".join(texts), len(reader.pages), notes
+    except Exception as exc:
+        return "", 0, [f"PDF를 읽는 중 문제가 발생했습니다: {exc}"]
+
+
+def extract_pptx_text(data: bytes) -> tuple[str, int, list[str]]:
+    if Presentation is None:
+        return "", 0, ["PPTX 텍스트 추출 라이브러리가 설치되지 않았습니다."]
+
+    notes: list[str] = []
+    try:
+        presentation = Presentation(BytesIO(data))
+        texts: list[str] = []
+        for index, slide in enumerate(presentation.slides):
+            if index >= 80:
+                notes.append("앞쪽 80개 슬라이드까지만 분석했습니다.")
+                break
+            slide_texts: list[str] = []
+            for shape in slide.shapes:
+                if getattr(shape, "has_text_frame", False) and shape.text_frame:
+                    extracted = normalize_whitespace(shape.text_frame.text or "")
+                    if extracted:
+                        slide_texts.append(extracted)
+            texts.append(" ".join(slide_texts))
+        return "\n".join(texts), len(presentation.slides), notes
+    except Exception as exc:
+        return "", 0, [f"PPTX를 읽는 중 문제가 발생했습니다: {exc}"]
+
+
+def weighted_keyword_overlap(script_text: str, document_text: str, lead_units: list[str]) -> float:
+    script_tokens = [token for token in tokenize(script_text) if len(token) > 1]
+    document_tokens = [token for token in tokenize(document_text) if len(token) > 1]
+    if not script_tokens or not document_tokens:
+        return 0.0
+
+    script_set = set(script_tokens)
+    lead_tokens = set()
+    for unit in lead_units:
+        lead_tokens.update(token for token in tokenize(unit) if len(token) > 1)
+
+    title_hits = len(script_set & lead_tokens)
+    document_hits = len(script_set & set(document_tokens))
+    weighted_hits = (title_hits * 2.0) + document_hits
+    weighted_total = (len(script_set) * 1.25) + max(1, len(set(document_tokens)))
+    return min(1.0, weighted_hits / weighted_total * 3.2)
+
+
+def analyze_material_file(script: str, name: str, content_type: str | None, data: bytes) -> dict[str, Any]:
+    kind = file_kind(name, content_type)
+    if len(data) > MAX_PRESENTATION_UPLOAD_BYTES:
+        return {
+            "filename": name,
+            "content_type": content_type or "application/octet-stream",
+            "kind": kind,
+            "error": "파일 크기가 허용 한도를 초과했습니다.",
+        }
+
+    if kind == "pdf":
+        extracted_text, page_count, notes = extract_pdf_text(data)
+        unit_count = page_count or len(split_text_units(extracted_text))
+    elif kind == "pptx":
+        extracted_text, page_count, notes = extract_pptx_text(data)
+        unit_count = page_count or len(split_text_units(extracted_text))
+    else:
+        return {
+            "filename": name,
+            "content_type": content_type or "application/octet-stream",
+            "kind": kind,
+            "error": "PDF 또는 PPTX만 업로드할 수 있습니다.",
+        }
+
+    extracted_text = normalize_whitespace(extracted_text)
+    units = split_text_units(extracted_text)
+    lead_units = units[:2]
+    script_tokens = [token for token in tokenize(script) if len(token) > 1]
+    material_tokens = [token for token in tokenize(extracted_text) if len(token) > 1]
+    material_sets = [set(tokenize(unit)) for unit in units if tokenize(unit)]
+    unit_total = max(1, unit_count or len(material_sets) or 1)
+    total_word_count = len(material_tokens)
+    avg_words_per_unit = total_word_count / unit_total
+    longest_unit = max((len(tokens) for tokens in material_sets), default=0)
+    overlap = len(set(script_tokens) & set(material_tokens)) / len(set(script_tokens)) if script_tokens and material_tokens else 0
+
+    adjacent_overlaps: list[float] = []
+    for previous, current in zip(material_sets, material_sets[1:]):
+        union = previous | current
+        if not union:
+            continue
+        adjacent_overlaps.append(len(previous & current) / len(union))
+
+    consistency_score = round(
+        clamp(
+            58
+            + (sum(adjacent_overlaps) / len(adjacent_overlaps) * 90 if adjacent_overlaps else 8)
+            - max(0, avg_words_per_unit - 30) * 1.3
+            - max(0, longest_unit - 70) * 0.4,
+            35,
+            100,
+        )
+    )
+    clarity_score = round(
+        clamp(
+            92
+            - max(0, avg_words_per_unit - 24) * 1.9
+            - max(0, longest_unit - 45) * 0.65
+            - (0 if extracted_text else 14),
+            35,
+            100,
+        )
+    )
+    topic_alignment = weighted_keyword_overlap(script, extracted_text, lead_units)
+    topic_fit_score = round(clamp((overlap * 58) + (topic_alignment * 42), 30, 100))
+
+    estimated_minutes = round(
+        max(
+            max(1.0, len(script_tokens) / 130.0),
+            max(1.0, unit_total * 0.45 + total_word_count / 180.0),
+        )
+        * 1.15,
+        1,
+    )
+
+    notes = notes[:]
+    if not extracted_text:
+        notes.append("텍스트를 충분히 읽지 못해 이미지/도형 중심의 시인성 평가는 제한됩니다.")
+    if avg_words_per_unit > 40:
+        notes.append("장당 텍스트가 많아 슬라이드가 다소 붐빌 수 있습니다.")
+    if overlap < 0.2:
+        notes.append("대본과 자료의 공통 키워드가 적어서 주제 적합도가 낮습니다.")
+    if topic_alignment >= 0.55:
+        notes.append("대본 앞부분과 슬라이드 도입부의 주제가 잘 맞습니다.")
+    elif topic_alignment < 0.25:
+        notes.append("슬라이드 도입부와 대본의 주제 연결을 조금 더 분명하게 맞추면 좋습니다.")
+    if consistency_score >= 80:
+        notes.append("슬라이드 간 흐름이 비교적 안정적입니다.")
+
+    overall_score = round((clarity_score * 0.34) + (consistency_score * 0.33) + (topic_fit_score * 0.33))
+    summary = (
+        f"{name} 기준 예상 발표 시간은 약 {estimated_minutes}분이고, "
+        f"시인성 {clarity_score}점, 통일성 {consistency_score}점, 주제 적합도 {topic_fit_score}점으로 평가됩니다."
+    )
+
+    return {
+        "filename": name,
+        "content_type": content_type or "application/octet-stream",
+        "kind": kind,
+        "page_count": page_count if kind == "pdf" else 0,
+        "slide_count": page_count if kind == "pptx" else 0,
+        "extracted_character_count": len(extracted_text),
+        "word_count": total_word_count,
+        "unit_count": unit_total,
+        "estimated_minutes": estimated_minutes,
+        "clarity_score": clarity_score,
+        "consistency_score": consistency_score,
+        "topic_fit_score": topic_fit_score,
+        "overall_score": overall_score,
+        "preview": extracted_text[:280],
+        "notes": notes,
+        "summary": summary,
+        "error": None,
+    }
+
+
+def build_material_feedback(script: str, materials: list[dict[str, Any]]) -> dict[str, Any]:
+    if not materials:
+        return {
+            "uploaded": False,
+            "files": [],
+            "estimated_minutes": max(1.0, round(len(tokenize(script)) / 130.0, 1)),
+            "clarity_score": 0,
+            "consistency_score": 0,
+            "topic_fit_score": 0,
+            "overall_score": 0,
+            "summary": "발표 자료가 업로드되지 않았습니다.",
+            "notes": [],
+        }
+
+    valid_files = [item for item in materials if not item.get("error")]
+    estimated_minutes = max((item.get("estimated_minutes", 0) for item in valid_files), default=0.0)
+    if not estimated_minutes:
+        estimated_minutes = max(1.0, round(len(tokenize(script)) / 130.0, 1))
+
+    if valid_files:
+        clarity_score = round(sum(item["clarity_score"] for item in valid_files) / len(valid_files))
+        consistency_score = round(sum(item["consistency_score"] for item in valid_files) / len(valid_files))
+        topic_fit_score = round(sum(item["topic_fit_score"] for item in valid_files) / len(valid_files))
+        overall_score = round(sum(item["overall_score"] for item in valid_files) / len(valid_files))
+    else:
+        clarity_score = consistency_score = topic_fit_score = overall_score = 0
+
+    summary = " / ".join(item["summary"] for item in valid_files[:3]) if valid_files else "업로드된 자료를 해석하지 못했습니다."
+    notes = [note for item in valid_files for note in item.get("notes", [])][:8]
+
+    return {
+        "uploaded": True,
+        "files": materials,
+        "estimated_minutes": estimated_minutes,
+        "clarity_score": clarity_score,
+        "consistency_score": consistency_score,
+        "topic_fit_score": topic_fit_score,
+        "overall_score": overall_score,
+        "summary": summary,
+        "notes": notes,
+    }
+
+
 def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, Any]:
     samples = session.samples
     last_sample = samples[-1] if samples else None
@@ -891,6 +1234,7 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
     transcript_tokens = tokenize(transcript)
     transcript_set = set(transcript_tokens)
     overlap = len(script_tokens & transcript_set) / len(script_tokens) if script_tokens else 0
+    material_feedback = build_material_feedback(session.script, session.materials)
 
     elapsed = last_sample.elapsed_seconds if last_sample else 0
     total_silence = last_sample.silence_seconds if last_sample else 0
@@ -1008,6 +1352,8 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         },
         "keyword_feedback": keyword_feedback,
         "criteria_basis": presentation_criteria(),
+        "presentation_material": material_feedback,
+        "reference_video": session.reference_video,
         "audience_reactions": reaction_counts,
         "strengths": strengths[:4] or ["리허설 데이터를 안정적으로 수집했습니다."],
         "improvements": improvements[:6],
@@ -1018,6 +1364,10 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         ),
         "used_gemini": False,
     }
+    if material_feedback.get("uploaded"):
+        report["summary"] = f"{report['summary']} 업로드된 발표자료를 함께 분석해 예상 시간과 시인성도 반영했습니다."
+    if session.reference_video:
+        report["reference_comparison"] = build_reference_comparison(report, session.reference_video)
     report["detailed_feedback"] = build_detailed_feedback(report, issue_log)
     return report
 
@@ -1089,9 +1439,60 @@ def build_reference_comparison(report: dict[str, Any], reference_video: dict[str
     }
 
 
+def build_reference_comparison(report: dict[str, Any], reference_video: dict[str, Any]) -> dict[str, Any]:
+    pace = report["pace"]["syllables_per_second"]
+    pause_ratio = report["silence"]["pause_ratio_percent"]
+    script = report.get("script", {})
+    average_sentence_words = script.get("average_sentence_words", 0)
+    benchmark_targets = reference_video.get("benchmark_targets") or {}
+    notes = []
+
+    if pace < 5.6:
+        notes.append("말하기 속도가 조금 느립니다. 기준 영상처럼 문장 사이 이동을 더 부드럽게 이어 보세요.")
+    elif pace > 6.3:
+        notes.append("말하기 속도가 조금 빠릅니다. 핵심어 앞뒤에서 속도를 낮춰 보세요.")
+    else:
+        notes.append("말하기 속도는 기준 영상과 비교하기 좋은 범위입니다.")
+
+    if average_sentence_words > 24:
+        notes.append("문장이 길어 설명이 무거워질 수 있습니다. 의미 단위로 나눠 말해 보세요.")
+    else:
+        notes.append("문장 길이는 비교적 안정적이라 기준 영상의 설명 흐름과 비교하기 좋습니다.")
+
+    if pause_ratio > 25:
+        notes.append("쉬는 구간이 많은 편입니다. 의미 단위 뒤에만 짧게 쉬어 보세요.")
+    elif pause_ratio < 8:
+        notes.append("쉬는 구간이 적습니다. 핵심 문장 뒤에 짧은 여백을 주세요.")
+    else:
+        notes.append("쉬는 타이밍이 비교적 안정적입니다.")
+
+    return {
+        "title": reference_video.get("title", "기준 발표 영상"),
+        "author_name": reference_video.get("author_name", "YouTube"),
+        "targets": list(benchmark_targets.keys()) or ["말하기 속도", "화법", "쉬는 타이밍", "강조 방식"],
+        "notes": notes[:4],
+        "analysis_note": reference_video.get("analysis_note"),
+        "reference_profile": reference_video.get("reference_profile"),
+    }
+
+
 async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str, Any]) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
+        return fallback_report
+
+    allowed, retry_after, remaining = gemini_limiter.allow()
+    if not allowed:
+        fallback_report["summary"] = (
+            "Gemini 호출 한도에 도달해 기본 분석으로 대체했습니다. "
+            f"잠시 후 다시 시도하면 AI 분석을 사용할 수 있습니다. (다음 시도 가능: 약 {retry_after:.0f}초 후)"
+        )
+        fallback_report["used_gemini"] = False
+        fallback_report["gemini_limits"] = {
+            "rate_limited": True,
+            "retry_after_seconds": round(retry_after, 1),
+            "remaining_calls": remaining,
+        }
         return fallback_report
 
     model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
@@ -1116,6 +1517,9 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
             "issue_log": fallback_report["issue_log"],
             "detailed_feedback": fallback_report["detailed_feedback"],
             "criteria_basis": fallback_report["criteria_basis"],
+            "presentation_material": fallback_report.get("presentation_material", {}),
+            "reference_video": fallback_report.get("reference_video"),
+            "reference_comparison": fallback_report.get("reference_comparison"),
             "audience_reactions": fallback_report["audience_reactions"],
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
@@ -1153,6 +1557,25 @@ async def ai_status() -> dict[str, Any]:
             "message": "GEMINI_API_KEY가 비어 있어 로컬 분석만 사용합니다.",
         }
 
+    now = time.monotonic()
+    cached = ai_status_cache.get("payload")
+    cached_at = float(ai_status_cache.get("checked_at") or 0.0)
+    if cached and now - cached_at < GEMINI_STATUS_CACHE_SECONDS:
+        return {**cached, "cached": True}
+
+    allowed, retry_after, remaining = gemini_limiter.allow()
+    if not allowed:
+        return {
+            "configured": True,
+            "live": False,
+            "model": model,
+            "cached": True,
+            "rate_limited": True,
+            "remaining_calls": remaining,
+            "retry_after_seconds": round(retry_after, 1),
+            "message": f"Gemini 상태 확인이 너무 자주 요청되어 캐시된 상태를 반환합니다. 약 {retry_after:.0f}초 후 다시 확인하세요.",
+        }
+
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     payload = {
         "contents": [{"parts": [{"text": "Return the single word OK."}]}],
@@ -1164,12 +1587,17 @@ async def ai_status() -> dict[str, Any]:
             response.raise_for_status()
             data = response.json()
             text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-            return {
+            result = {
                 "configured": True,
                 "live": bool(text),
                 "model": model,
+                "rate_limited": False,
+                "remaining_calls": remaining,
                 "message": "Gemini API 연결이 정상입니다.",
             }
+            ai_status_cache["checked_at"] = now
+            ai_status_cache["payload"] = result
+            return result
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code
         if status_code == 429:
@@ -1178,20 +1606,29 @@ async def ai_status() -> dict[str, Any]:
             message = "Gemini API 키 권한을 확인해야 합니다."
         else:
             message = f"Gemini API 연결 확인에 실패했습니다. 상태 코드: {status_code}"
-        return {
+        result = {
             "configured": True,
             "live": False,
             "model": model,
+            "rate_limited": False,
+            "remaining_calls": remaining,
             "message": message,
         }
+        ai_status_cache["checked_at"] = now
+        ai_status_cache["payload"] = result
+        return result
     except Exception:
-        return {
+        result = {
             "configured": True,
             "live": False,
             "model": model,
+            "rate_limited": False,
+            "remaining_calls": remaining,
             "message": "Gemini API 연결을 확인하지 못했습니다. 잠시 후 다시 시도하세요.",
         }
-
+        ai_status_cache["checked_at"] = now
+        ai_status_cache["payload"] = result
+        return result
 
 @app.get("/health")
 def health() -> dict[str, str]:
@@ -1227,24 +1664,36 @@ async def preview_youtube_reference(payload: dict[str, str]) -> dict[str, Any]:
 
 
 @app.post("/api/session/start")
-async def start_session(request: StartSessionRequest) -> dict[str, Any]:
-    reference_video = await build_reference_video(request.reference_video_url)
+async def start_session(
+    script: str = Form(...),
+    reference_video_url: str | None = Form(default=None),
+    materials: list[UploadFile] | None = File(default=None),
+) -> dict[str, Any]:
     session_id = str(uuid4())
+    uploaded_materials: list[dict[str, Any]] = []
+    for file in (materials or [])[:MAX_PRESENTATION_UPLOAD_FILES]:
+        data = await file.read()
+        uploaded_materials.append(analyze_material_file(script, file.filename, file.content_type, data))
+    reference_video = await build_reference_video(reference_video_url)
+
     session = SessionState(
         id=session_id,
-        script=request.script.strip(),
+        script=script.strip(),
         created_at=datetime.now(timezone.utc).isoformat(),
+        materials=uploaded_materials,
         reference_video=reference_video,
     )
     sessions[session_id] = session
+    material_feedback = build_material_feedback(session.script, session.materials)
     return {
         "session_id": session_id,
         "script_feedback": script_quality(session.script),
         "criteria_basis": presentation_criteria(),
-        "gemini_ready": bool(os.getenv("GEMINI_API_KEY", "").strip()),
+        "presentation_material": material_feedback,
         "reference_video": reference_video,
+        "gemini_ready": bool(os.getenv("GEMINI_API_KEY", "").strip()),
+        "upload_count": len(uploaded_materials),
     }
-
 
 @app.post("/api/session/{session_id}/metric")
 def add_metric(session_id: str, sample: MetricSample) -> dict[str, str]:

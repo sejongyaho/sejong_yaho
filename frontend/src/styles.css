@@ -1298,6 +1298,44 @@ textarea::placeholder {
     #fffdf5;
 }
 
+.loading-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.report-header {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.report-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 18px;
+}
+
+.report-hero h2 {
+  margin-bottom: 8px;
+  font-size: 1.55rem;
+}
+
+.report-header h2 {
+  font-size: 1.35rem;
+}
+
+.score-ring {
+  display: inline-flex;
+  min-width: 82px;
+  height: 56px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
 .report-summary-card h2 {
   margin: 0 0 10px;
   color: var(--ink);
@@ -1677,17 +1715,105 @@ textarea::placeholder {
     animation-iteration-count: 1 !important;
   }
 }
+.reference-link-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 16px;
+}
 
-@media (max-width: 980px) {
-  .brand-nav {
-    grid-template-columns: 1fr auto;
-  }
+.reference-link-copy span {
+  color: #8bd8c6;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
 
-  .nav-links {
-    display: none;
-  }
+.reference-link-copy strong {
+  display: block;
+  margin-top: 4px;
+  color: #fff;
+}
 
-  .product-header,
+.reference-link-copy p {
+  margin: 6px 0 0;
+  color: #cbd5e1;
+  line-height: 1.5;
+}
+
+.reference-input-row input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(7, 11, 19, 0.8);
+  padding: 0 12px;
+  color: #fff;
+}
+
+.reference-report {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 16px;
+}
+
+.reference-card {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.reference-card img {
+  width: 96px;
+  aspect-ratio: 16 / 9;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.reference-card strong,
+.reference-card span {
+  display: block;
+}
+
+.reference-card span {
+  margin-top: 6px;
+  color: var(--text-soft);
+  line-height: 1.45;
+}
+
+.reference-analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.reference-analysis-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 12px;
+}
+
+.reference-analysis-item span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.reference-analysis-item p {
+  margin: 8px 0 0;
+  color: var(--text-soft);
+  line-height: 1.55;
+}
   .setup-grid,
   .practice-layout,
   .transcript-layout,

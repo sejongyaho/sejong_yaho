@@ -1,5 +1,28 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
-import { BarChart3, FileText, Leaf, Loader2, Play, Search, RefreshCcw, SquarePlay, Upload } from "lucide-react";
+import {
+  BarChart3,
+  Bell,
+  CalendarDays,
+  CheckCircle2,
+  ChevronDown,
+  CircleGauge,
+  Clock3,
+  FileText,
+  Home,
+  LayoutDashboard,
+  Leaf,
+  Loader2,
+  MessageSquareText,
+  Mic2,
+  MoreHorizontal,
+  Play,
+  Plus,
+  RefreshCcw,
+  Search,
+  Settings,
+  SquarePlay,
+  Upload,
+} from "lucide-react";
 import PreFeedbackPage from "./components/PreFeedbackPage";
 import PracticePage from "./components/PracticePage";
 import ReferenceQuickAnalysis from "./components/ReferenceQuickAnalysis";
@@ -45,7 +68,8 @@ function clearStoredSetup() {
 
 function pageFromPath(pathname) {
   if (pathname === "/pre-feedback" || pathname === "/feedback/pre") return "preFeedback";
-  if (pathname === "/records") return "report";
+  if (pathname === "/records") return "records";
+  if (pathname === "/practice" || pathname === "/rehearsal") return "setup";
   return "setup";
 }
 
@@ -785,8 +809,16 @@ function App() {
 
   const goToRecords = () => {
     cleanupRecording();
-    setPage("report");
+    setPage("records");
     window.history.pushState({}, "", "/records");
+    setIsPresenting(false);
+    isPresentingRef.current = false;
+  };
+
+  const goToPracticePath = () => {
+    cleanupRecording();
+    setPage("setup");
+    window.history.pushState({}, "", "/practice");
     setIsPresenting(false);
     isPresentingRef.current = false;
   };
@@ -894,6 +926,8 @@ function App() {
             spokenWords={spokenWords}
           />
         )}
+
+        {page === "records" && <RecordsDashboard onNewPractice={goToPracticePath} />}
       </section>
     </main>
   );
@@ -909,7 +943,7 @@ function AppNav({ currentPage, goToPreFeedback, goToRecords, goToSetup }) {
       <div className="nav-links" aria-label="주요 메뉴">
         <button className={currentPage === "preFeedback" ? "active" : ""} type="button" onClick={goToPreFeedback}>사전 피드백</button>
         <button className={currentPage === "setup" || currentPage === "practice" ? "active" : ""} type="button" onClick={goToSetup}>발표 연습</button>
-        <button className={currentPage === "report" ? "active" : ""} type="button" onClick={goToRecords}>기록</button>
+        <button className={currentPage === "report" || currentPage === "records" ? "active" : ""} type="button" onClick={goToRecords}>기록</button>
       </div>
     </nav>
   );
@@ -940,8 +974,10 @@ function SetupPage({
 }) {
   const [dragging, setDragging] = useState(false);
   const [shouldScrollToFeedback, setShouldScrollToFeedback] = useState(false);
+  const [showReferencePanel, setShowReferencePanel] = useState(false);
   const fileInputRef = useRef(null);
   const preflightRef = useRef(null);
+  const referencePanelRef = useRef(null);
   const scriptWords = tokenCount(script);
   const estimatedMinutes = Math.max(1, Math.round(scriptWords / 135));
 
@@ -954,6 +990,13 @@ function SetupPage({
   const handleScriptFeedback = async () => {
     setShouldScrollToFeedback(true);
     await preparePresentation();
+  };
+
+  const openReferencePanel = () => {
+    setShowReferencePanel(true);
+    requestAnimationFrame(() => {
+      referencePanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   };
 
   useEffect(() => {
@@ -981,6 +1024,10 @@ function SetupPage({
             >
               {isStarting ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
               {isStarting ? "발표 시작 중" : "발표 시작"}
+            </button>
+            <button className="secondary-button reference-toggle-button" type="button" onClick={openReferencePanel}>
+              <SquarePlay size={18} />
+              레퍼런스 분석
             </button>
             <span className="hero-note">
               사전 분석은 선택입니다. 바로 시작할 수도 있고, 먼저 피드백을 본 뒤 발표를 시작할 수도 있습니다.
@@ -1100,47 +1147,407 @@ function SetupPage({
         </section>
       ) : null}
 
-      <div className="reference-link-panel">
-        <div className="reference-link-copy">
-          <span>reference model</span>
-          <strong>닮고 싶은 발표를 넣어주세요</strong>
-          <p>원하는 발표 레퍼런스를 분석해 내 대본과 비교합니다.</p>
+      {showReferencePanel ? (
+        <div className="reference-link-panel" ref={referencePanelRef}>
+          <div className="reference-link-copy">
+            <span>reference model</span>
+            <strong>닮고 싶은 발표를 넣어주세요</strong>
+            <p>원하는 발표 레퍼런스를 분석해 내 대본과 비교합니다.</p>
+          </div>
+          <div className="youtube-link-shell youtube-link-shell-light">
+            <SquarePlay size={16} />
+            <label>
+              <span>youtube reference</span>
+              <input
+                type="url"
+                value={referenceVideoUrl}
+                onChange={(event) => setReferenceVideoUrl(event.target.value)}
+                placeholder="https://youtube.com/watch?v=..."
+                aria-label="유튜브 링크"
+              />
+            </label>
+            <button className="reference-link-button" onClick={applyReferenceVideo} disabled={isLoadingReference} title="영상 분석">
+              {isLoadingReference ? <Loader2 className="spin" size={17} /> : <Search size={17} />}
+            </button>
+          </div>
+          <div className="reference-inline-result">
+            {referenceVideo ? (
+              <>
+                <div className="reference-card">
+                  <img src={referenceVideo.thumbnail_url} alt="" />
+                  <div>
+                    <strong>{referenceVideo.title || `YouTube 영상 ${referenceVideo.video_id}`}</strong>
+                    <span>{referenceVideo.author_name}</span>
+                    <span>{formatReferenceStatus(referenceVideo)}</span>
+                  </div>
+                </div>
+                <ReferenceQuickAnalysis referenceVideo={referenceVideo} />
+              </>
+            ) : (
+              <p>URL을 넣고 분석하면 말하기 속도, 화법, 쉬는 타이밍, 강조 방식을 간단히 보여줍니다.</p>
+            )}
+          </div>
         </div>
-        <div className="youtube-link-shell youtube-link-shell-light">
-          <SquarePlay size={16} />
-          <label>
-            <span>youtube reference</span>
-            <input
-              type="url"
-              value={referenceVideoUrl}
-              onChange={(event) => setReferenceVideoUrl(event.target.value)}
-              placeholder="https://youtube.com/watch?v=..."
-              aria-label="유튜브 링크"
-            />
+      ) : null}
+    </>
+  );
+}
+
+const scoreHistory = [
+  { date: "06/18", total: 62, speechRate: 58, structure: 64, fillerWords: 52, persuasion: 61, closing: 66 },
+  { date: "06/20", total: 68, speechRate: 62, structure: 70, fillerWords: 60, persuasion: 66, closing: 72 },
+  { date: "06/22", total: 74, speechRate: 70, structure: 76, fillerWords: 66, persuasion: 72, closing: 78 },
+  { date: "06/24", total: 81, speechRate: 78, structure: 84, fillerWords: 73, persuasion: 79, closing: 86 },
+  { date: "06/25", total: 86, speechRate: 82, structure: 88, fillerWords: 80, persuasion: 85, closing: 89 },
+];
+
+const scoreOptions = [
+  { key: "total", label: "종합", color: "#cc785c" },
+  { key: "speechRate", label: "말 속도", color: "#7e8465" },
+  { key: "structure", label: "구조", color: "#5a5872" },
+  { key: "fillerWords", label: "습관어", color: "#d18c62" },
+  { key: "persuasion", label: "설득력", color: "#5db8a6" },
+  { key: "closing", label: "마무리", color: "#a9583e" },
+];
+
+const summaryCards = [
+  { label: "총 연습 횟수", value: "12회", note: "이번 달 4회", change: "+33%", icon: CalendarDays, tone: "sage" },
+  { label: "평균 발표 점수", value: "78점", note: "최근 5회 평균", change: "+8점", icon: CircleGauge, tone: "coral" },
+  { label: "최고 점수", value: "91점", note: "해커톤 1차 발표", change: "Best", icon: CheckCircle2, tone: "plum" },
+  { label: "습관어 감소율", value: "-23%", note: "첫 연습 대비", change: "개선 중", icon: Mic2, tone: "amber" },
+];
+
+const capabilityMetrics = [
+  { label: "말 속도", value: 82 },
+  { label: "구조", value: 88 },
+  { label: "습관어", value: 80 },
+  { label: "설득력", value: 85 },
+  { label: "마무리", value: 89 },
+];
+
+const weaknessItems = [
+  { tag: "말 속도", text: "발표 초반 30초에서 말 속도가 빠른 편입니다." },
+  { tag: "습관어", text: "“어”, “음”, “약간” 같은 습관어가 반복적으로 나타납니다." },
+  { tag: "설득력", text: "문제 제기 이후 근거 설명이 짧아 설득력이 약해지는 구간이 있습니다." },
+];
+
+const fillerWords = [
+  { word: "어", count: 18, change: -6 },
+  { word: "음", count: 14, change: -4 },
+  { word: "약간", count: 11, change: -2 },
+  { word: "그", count: 9, change: -3 },
+  { word: "뭔가", count: 7, change: -1 },
+];
+
+const practiceGoals = [
+  "발표 초반 30초의 말 속도를 조금 낮춰보세요.",
+  "문제 제기 뒤에 근거를 한 문장 더 추가해보세요.",
+  "마무리에서 서비스의 기대효과를 더 명확히 정리해보세요.",
+];
+
+const recentRecords = [
+  { date: "06/25", title: "Pitch up 최종 발표 리허설", score: 86, grade: "A", weakest: "습관어", time: "4분 20초" },
+  { date: "06/24", title: "해커톤 1차 발표", score: 81, grade: "B+", weakest: "설득력", time: "3분 55초" },
+  { date: "06/22", title: "서비스 문제 정의 발표", score: 74, grade: "B", weakest: "마무리", time: "4분 08초" },
+  { date: "06/20", title: "팀 중간 공유", score: 68, grade: "C+", weakest: "말 속도", time: "3분 42초" },
+  { date: "06/18", title: "첫 발표 연습", score: 62, grade: "C", weakest: "구조", time: "3분 30초" },
+];
+
+const recordMenuItems = [
+  { label: "홈", icon: Home },
+  { label: "사전 피드백", icon: FileText },
+  { label: "실전 리허설", icon: Mic2 },
+  { label: "질문 코칭", icon: MessageSquareText },
+  { label: "나의 기록", icon: LayoutDashboard, active: true },
+  { label: "설정", icon: Settings },
+];
+
+function RecordsDashboard({ onNewPractice }) {
+  const [selectedMetric, setSelectedMetric] = useState("total");
+  const [period, setPeriod] = useState("최근 30일");
+  const currentOption = scoreOptions.find((option) => option.key === selectedMetric) || scoreOptions[0];
+  const latestScore = scoreHistory.at(-1)?.[selectedMetric] ?? 0;
+  const previousScore = scoreHistory.at(-2)?.[selectedMetric] ?? latestScore;
+  const maxFillerCount = Math.max(...fillerWords.map((item) => item.count));
+
+  return (
+    <div className="records-shell">
+      <aside className="records-sidebar" aria-label="Pitch up 메뉴">
+        <button className="records-brand" type="button" onClick={onNewPractice}>
+          <span><Leaf size={15} /></span>
+          <strong>Pitch up</strong>
+        </button>
+        <nav className="records-menu">
+          {recordMenuItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button className={item.active ? "active" : ""} key={item.label} type="button">
+                <Icon size={17} />
+                {item.label}
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
+
+      <section className="records-workspace">
+        <div className="records-topbar">
+          <label className="records-search">
+            <Search size={17} />
+            <input placeholder="발표 기록 검색" aria-label="발표 기록 검색" />
           </label>
-          <button className="reference-link-button" onClick={applyReferenceVideo} disabled={isLoadingReference} title="영상 분석">
-            {isLoadingReference ? <Loader2 className="spin" size={17} /> : <Search size={17} />}
+          <button className="records-icon-button" type="button" aria-label="알림">
+            <Bell size={18} />
+            <span>2</span>
+          </button>
+          <div className="records-profile">
+            <div>HY</div>
+            <span>
+              <strong>홍윤상</strong>
+              Presenter
+            </span>
+          </div>
+          <button className="records-new-button" type="button" onClick={onNewPractice}>
+            <Plus size={17} />
+            새 발표 연습
           </button>
         </div>
-        <div className="reference-inline-result">
-          {referenceVideo ? (
-            <>
-              <div className="reference-card">
-                <img src={referenceVideo.thumbnail_url} alt="" />
-                <div>
-                  <strong>{referenceVideo.title || `YouTube 영상 ${referenceVideo.video_id}`}</strong>
-                  <span>{referenceVideo.author_name}</span>
-                  <span>{formatReferenceStatus(referenceVideo)}</span>
+
+        <header className="records-header">
+          <div>
+            <p className="eyebrow">My practice log</p>
+            <h1>나의 기록</h1>
+            <p>발표 연습 데이터를 기반으로 나의 성장 흐름과 반복 약점을 확인할 수 있습니다.</p>
+          </div>
+          <div className="period-filter" aria-label="기간 필터">
+            {["최근 7일", "최근 30일", "최근 3개월", "전체"].map((item) => (
+              <button className={period === item ? "active" : ""} key={item} type="button" onClick={() => setPeriod(item)}>
+                {item}
+              </button>
+            ))}
+          </div>
+        </header>
+
+        <section className="summary-grid" aria-label="발표 연습 요약">
+          {summaryCards.map((card) => {
+            const Icon = card.icon;
+            return (
+              <article className={`summary-card tone-${card.tone}`} key={card.label}>
+                <div className="summary-card-top">
+                  <span><Icon size={16} /></span>
+                  <em>{card.change}</em>
                 </div>
+                <strong>{card.value}</strong>
+                <p>{card.label}</p>
+                <small>{card.note}</small>
+              </article>
+            );
+          })}
+        </section>
+
+        <section className="records-main-grid">
+          <article className="dashboard-card score-card">
+            <div className="records-card-heading">
+              <div>
+                <h2>발표 점수 변화</h2>
+                <p>연습을 반복할수록 종합 점수가 어떻게 변화했는지 보여줍니다.</p>
               </div>
-              <ReferenceQuickAnalysis referenceVideo={referenceVideo} />
-            </>
-          ) : (
-            <p>URL을 넣고 분석하면 말하기 속도, 화법, 쉬는 타이밍, 강조 방식을 간단히 보여줍니다.</p>
-          )}
-        </div>
-      </div>
-    </>
+              <button className="card-select" type="button">
+                {period}
+                <ChevronDown size={15} />
+              </button>
+            </div>
+            <div className="score-tabs">
+              {scoreOptions.map((option) => (
+                <button
+                  className={selectedMetric === option.key ? "active" : ""}
+                  key={option.key}
+                  style={{ "--metric-color": option.color }}
+                  type="button"
+                  onClick={() => setSelectedMetric(option.key)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <ScoreLineChart metric={selectedMetric} option={currentOption} />
+          </article>
+
+          <article className="dashboard-card capability-card">
+            <div className="records-card-heading tight">
+              <div>
+                <h2>현재 발표 역량</h2>
+                <p>최근 발표 기준</p>
+              </div>
+              <MoreHorizontal size={18} />
+            </div>
+            <div className="records-donut" aria-label={`현재 ${latestScore}점`}>
+              <div>
+                <strong>{latestScore}</strong>
+                <span>점</span>
+              </div>
+            </div>
+            <div className="capability-list">
+              {capabilityMetrics.map((item) => (
+                <div className="capability-row" key={item.label}>
+                  <span>{item.label}</span>
+                  <div><i style={{ width: `${item.value}%` }} /></div>
+                  <strong>{item.value}</strong>
+                </div>
+              ))}
+            </div>
+          </article>
+        </section>
+
+        <section className="records-secondary-grid">
+          <article className="dashboard-card weakness-card">
+            <div className="records-card-heading">
+              <div>
+                <h2>반복 약점</h2>
+                <p>최근 기록에서 반복적으로 확인된 패턴입니다.</p>
+              </div>
+            </div>
+            <div className="weakness-list">
+              {weaknessItems.map((item) => (
+                <div key={item.text}>
+                  <span>{item.tag}</span>
+                  <p>{item.text}</p>
+                </div>
+              ))}
+            </div>
+          </article>
+
+          <article className="dashboard-card filler-card">
+            <div className="records-card-heading tight">
+              <div>
+                <h2>자주 쓰는 습관어</h2>
+                <p>최근 발표에서 습관어가 이전보다 23% 감소했습니다.</p>
+              </div>
+            </div>
+            <div className="filler-list">
+              {fillerWords.map((item) => (
+                <div className="filler-row" key={item.word}>
+                  <span>{item.word}</span>
+                  <div><i style={{ width: `${(item.count / maxFillerCount) * 100}%` }} /></div>
+                  <strong>{item.count}회</strong>
+                  <em>{item.change}</em>
+                </div>
+              ))}
+            </div>
+          </article>
+
+          <article className="dashboard-card goal-card">
+            <div className="records-card-heading tight">
+              <div>
+                <h2>다음 연습 목표</h2>
+                <p>다음 발표에서 바로 확인할 세 가지입니다.</p>
+              </div>
+            </div>
+            <ol>
+              {practiceGoals.map((goal) => (
+                <li key={goal}>{goal}</li>
+              ))}
+            </ol>
+            <button className="records-new-button wide" type="button" onClick={onNewPractice}>
+              <Play size={17} />
+              이 목표로 다시 연습하기
+            </button>
+          </article>
+        </section>
+
+        <section className="dashboard-card records-table-card">
+          <div className="records-card-heading">
+            <div>
+              <h2>최근 발표 기록</h2>
+              <p>{period} 기준으로 정리한 발표 연습 로그입니다.</p>
+            </div>
+            <span className="score-delta">
+              <Clock3 size={15} />
+              {currentOption.label} {previousScore} → {latestScore}
+            </span>
+          </div>
+          <div className="records-table-wrap">
+            <table className="records-table">
+              <thead>
+                <tr>
+                  <th>날짜</th>
+                  <th>발표 제목</th>
+                  <th>총점</th>
+                  <th>등급</th>
+                  <th>가장 낮은 항목</th>
+                  <th>시간</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentRecords.map((record) => (
+                  <tr key={`${record.date}-${record.title}`}>
+                    <td>{record.date}</td>
+                    <td>{record.title}</td>
+                    <td><strong>{record.score}</strong>점</td>
+                    <td><span className="grade-pill">{record.grade}</span></td>
+                    <td>{record.weakest}</td>
+                    <td>{record.time}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </div>
+  );
+}
+
+function ScoreLineChart({ metric, option }) {
+  const width = 620;
+  const height = 260;
+  const padX = 42;
+  const padTop = 20;
+  const padBottom = 34;
+  const plotWidth = width - padX * 2;
+  const plotHeight = height - padTop - padBottom;
+  const points = scoreHistory.map((item, index) => {
+    const x = padX + (plotWidth / (scoreHistory.length - 1)) * index;
+    const y = padTop + (100 - item[metric]) * (plotHeight / 100);
+    return { ...item, x, y, value: item[metric] };
+  });
+  const path = points.map((point) => `${point.x},${point.y}`).join(" ");
+  const areaPath = `${padX},${height - padBottom} ${path} ${width - padX},${height - padBottom}`;
+
+  return (
+    <div className="score-chart" style={{ "--chart-color": option.color }}>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${option.label} 점수 변화`}>
+        <defs>
+          <linearGradient id="scoreArea" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={option.color} stopOpacity="0.22" />
+            <stop offset="100%" stopColor={option.color} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {[25, 50, 75, 100].map((tick) => {
+          const y = padTop + (100 - tick) * (plotHeight / 100);
+          return (
+            <g key={tick}>
+              <line className="chart-grid" x1={padX} x2={width - padX} y1={y} y2={y} />
+              <text className="chart-tick" x="8" y={y + 4}>{tick}</text>
+            </g>
+          );
+        })}
+        <polygon points={areaPath} fill="url(#scoreArea)" />
+        <polyline className="score-line" points={path} />
+        {points.map((point, index) => (
+          <g key={`${point.date}-${metric}`}>
+            <circle className="score-point" cx={point.x} cy={point.y} r={index === points.length - 1 ? 6 : 4} />
+            <text className="chart-label" x={point.x} y={height - 8} textAnchor="middle">{point.date}</text>
+            {index === points.length - 1 ? (
+              <g>
+                <rect className="chart-tooltip-bg" x={point.x - 34} y={point.y - 38} width="68" height="24" rx="7" />
+                <text className="chart-tooltip" x={point.x} y={point.y - 22} textAnchor="middle">{point.value}점</text>
+              </g>
+            ) : null}
+          </g>
+        ))}
+      </svg>
+    </div>
   );
 }
 

@@ -53,6 +53,20 @@ const SETUP_STORAGE_KEY = "presentation.setup.v1";
 const LOCAL_SESSION_PREFIX = "local-practice";
 const DEFAULT_PRACTICE_SCRIPT =
   "안녕하세요. 오늘은 발표 연습을 시작하겠습니다. 핵심 내용을 또렷하게 전달하고, 중요한 문장 뒤에는 잠깐 멈추며, 마지막에는 결론을 분명하게 정리해 보겠습니다.";
+const DEFAULT_SCRIPT_FEEDBACK = {
+  score: 82,
+  status: "발표 가능 단계",
+  summary: "전체 흐름은 자연스럽지만, 일부 문장이 길고 발표 초반의 문제 제기가 조금 약합니다.",
+  strengths: [
+    "발표 주제가 명확합니다.",
+    "서비스 핵심 아이디어가 잘 드러납니다.",
+  ],
+  improvements: [
+    "도입부에서 청중의 공감을 더 끌어낼 필요가 있습니다.",
+    "긴 문장을 짧게 나누면 전달력이 좋아집니다.",
+    "마지막 문장에서 서비스 가치를 더 강하게 정리하면 좋습니다.",
+  ],
+};
 
 function loadStoredSetup() {
   if (typeof window === "undefined") return null;
@@ -1058,6 +1072,93 @@ function AppNav({ currentPage, goToPreFeedback, goToRecords, goToSetup }) {
   );
 }
 
+function normalizeScriptFeedback(scriptFeedback) {
+  if (!scriptFeedback) return null;
+  const score = scriptFeedback.score ?? DEFAULT_SCRIPT_FEEDBACK.score;
+  const strengths = scriptFeedback.strengths || scriptFeedback.good_points || [];
+  const improvements = scriptFeedback.improvements || scriptFeedback.suggestions || [];
+  return {
+    score,
+    status: scriptFeedback.status || (score >= 80 ? "발표 가능 단계" : "보완 필요 단계"),
+    summary: scriptFeedback.summary || scriptFeedback.overall_feedback || DEFAULT_SCRIPT_FEEDBACK.summary,
+    strengths: (strengths.length ? strengths : DEFAULT_SCRIPT_FEEDBACK.strengths).slice(0, 3),
+    improvements: (improvements.length ? improvements : DEFAULT_SCRIPT_FEEDBACK.improvements).slice(0, 4),
+  };
+}
+
+function FeedbackSummary({ feedback }) {
+  return (
+    <div className="script-feedback-summary">
+      <div className="script-feedback-score">
+        <strong>{feedback.score}</strong>
+        <span>점</span>
+      </div>
+      <div>
+        <span className="script-feedback-status">{feedback.status}</span>
+        <p>{feedback.summary}</p>
+      </div>
+    </div>
+  );
+}
+
+function FeedbackPointList({ items, title, tone }) {
+  return (
+    <article className={`feedback-point-card ${tone}`}>
+      <h4>{title}</h4>
+      <ul>
+        {items.map((item) => (
+          <li key={item}>
+            <CheckCircle2 size={16} />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </article>
+  );
+}
+
+function ScriptFeedbackCard({ feedback: rawFeedback, onEditScript }) {
+  const feedback = normalizeScriptFeedback(rawFeedback);
+
+  if (!feedback) {
+    return (
+      <article className="script-feedback-card empty">
+        <div className="script-feedback-card-head">
+          <div>
+            <span>Script coaching</span>
+            <h3>대본 피드백</h3>
+          </div>
+          <strong>대기 중</strong>
+        </div>
+        <p>대본 피드백 버튼을 누르면 발표 흐름, 좋은 점, 개선할 점을 이곳에서 정리해 드립니다.</p>
+      </article>
+    );
+  }
+
+  return (
+    <article className="script-feedback-card">
+      <div className="script-feedback-card-head">
+        <div>
+          <span>Script coaching</span>
+          <h3>대본 피드백</h3>
+        </div>
+        <strong>분석 완료</strong>
+      </div>
+      <FeedbackSummary feedback={feedback} />
+      <div className="feedback-point-grid">
+        <FeedbackPointList title="좋은 점" tone="positive" items={feedback.strengths} />
+        <FeedbackPointList title="개선할 점" tone="caution" items={feedback.improvements} />
+      </div>
+      <div className="script-feedback-card-cta">
+        <p>AI가 찾은 문장을 하나씩 확인하고, 원하는 수정만 내 대본에 반영해보세요.</p>
+        <button className="primary-button" type="button" onClick={onEditScript}>
+          문장별로 수정해보기
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function SetupPage({
   aiStatus,
   error,
@@ -1230,53 +1331,28 @@ function SetupPage({
             <h3>발표 시작 전 피드백</h3>
             <span>{sessionPrepared ? "분석 완료" : "다시 분석 필요"}</span>
           </div>
-          <div className="preflight-grid">
-            <article className="preflight-card">
-              <strong>대본 피드백</strong>
-              {scriptFeedback ? (
-                <>
-                  <div className="preflight-score">{scriptFeedback.score ?? 0}점</div>
-                  <p>단어 수 {scriptFeedback.word_count ?? 0}개, 문장 평균 {scriptFeedback.average_sentence_words ?? 0}단어</p>
-                  <ul>
-                    {(scriptFeedback.suggestions || []).slice(0, 3).map((suggestion) => (
-                      <li key={suggestion}>{suggestion}</li>
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                <p>대본 피드백 버튼을 누르면 대본 전달력 피드백이 여기에 표시됩니다.</p>
-              )}
-            </article>
-
+          <ScriptFeedbackCard feedback={scriptFeedback} onEditScript={openPreFeedback} />
+          {materialFeedback ? (
+            <div className="preflight-grid single">
             <article className="preflight-card">
               <strong>발표 자료 피드백</strong>
-              {materialFeedback ? (
-                <>
-                  <div className="preflight-metrics">
-                    <span>예상 {materialFeedback.estimated_minutes ?? 0}분</span>
-                    <span>시인성 {materialFeedback.clarity_score ?? 0}</span>
-                    <span>통일성 {materialFeedback.consistency_score ?? 0}</span>
-                    <span>주제 적합도 {materialFeedback.topic_fit_score ?? 0}</span>
-                  </div>
-                  <p>{materialFeedback.summary}</p>
-                  {materialFeedback.notes?.length ? (
-                    <ul>
-                      {materialFeedback.notes.slice(0, 3).map((note) => (
-                        <li key={note}>{note}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </>
-              ) : (
-                <p>발표 자료를 함께 올리면 자료별 시인성과 주제 적합도 피드백이 여기에 표시됩니다.</p>
-              )}
+              <div className="preflight-metrics">
+                <span>예상 {materialFeedback.estimated_minutes ?? 0}분</span>
+                <span>시인성 {materialFeedback.clarity_score ?? 0}</span>
+                <span>통일성 {materialFeedback.consistency_score ?? 0}</span>
+                <span>주제 적합도 {materialFeedback.topic_fit_score ?? 0}</span>
+              </div>
+              <p>{materialFeedback.summary}</p>
+              {materialFeedback.notes?.length ? (
+                <ul>
+                  {materialFeedback.notes.slice(0, 3).map((note) => (
+                    <li key={note}>{note}</li>
+                  ))}
+                </ul>
+              ) : null}
             </article>
-          </div>
-          <div className="preflight-actions">
-            <button className="secondary-button" type="button" onClick={openPreFeedback}>
-              자세히 수정해보기
-            </button>
-          </div>
+            </div>
+          ) : null}
         </section>
       ) : null}
 

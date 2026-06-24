@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -231,6 +231,7 @@ export function ScriptCorrectionWorkspace({ correction, onStartPractice, sourceS
   const [selectedId, setSelectedId] = useState(correction.suggestions[0]?.id || null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [nextStepsOpen, setNextStepsOpen] = useState(false);
+  const nextStepsRef = useRef(null);
   const completedCount = suggestions.filter((suggestion) => suggestion.status === "applied").length;
   const ignoredCount = suggestions.filter((suggestion) => suggestion.status === "ignored").length;
 
@@ -257,6 +258,19 @@ export function ScriptCorrectionWorkspace({ correction, onStartPractice, sourceS
     setNextStepsOpen(false);
   };
 
+  const completeCorrection = () => {
+    setNextStepsOpen(true);
+    const scrollToNextSteps = () => {
+      nextStepsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        scrollToNextSteps();
+      });
+    });
+    window.setTimeout(scrollToNextSteps, 420);
+  };
+
   return (
     <section className="script-correction-section">
       <div className="pre-section-heading">
@@ -275,7 +289,7 @@ export function ScriptCorrectionWorkspace({ correction, onStartPractice, sourceS
           scriptText={scriptText}
           suggestions={suggestions}
           onBack={() => window.history.back()}
-          onComplete={() => setNextStepsOpen(true)}
+          onComplete={completeCorrection}
           onCopy={() => copyText(scriptText)}
           onCopyAll={() => copyText(scriptText)}
           onReset={resetCorrection}
@@ -291,7 +305,7 @@ export function ScriptCorrectionWorkspace({ correction, onStartPractice, sourceS
           onSelectSuggestion={setSelectedId}
         />
       </div>
-      <div className={`post-correction-reveal ${nextStepsOpen ? "open" : ""}`}>
+      <div ref={nextStepsRef} className={`post-correction-reveal ${nextStepsOpen ? "open" : ""}`}>
         <div>
           <section className="post-correction-inner">
             <div className="post-correction-note">

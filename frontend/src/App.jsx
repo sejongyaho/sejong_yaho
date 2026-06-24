@@ -114,6 +114,16 @@ function clamp(value, low, high) {
   return Math.max(low, Math.min(high, value));
 }
 
+function formatReferenceStatus(referenceVideo) {
+  const profile = referenceVideo?.reference_profile;
+  if (!profile) return "분석 기준 준비 중";
+  const source = profile.transcript_source || "";
+  const sourceLabel = source.includes("caption") ? "자막 기반 전문 분석" : "음성 기반 전문 분석";
+  const pace = profile.syllables_per_second ? `초당 ${profile.syllables_per_second}음절` : null;
+  const wpm = profile.words_per_minute ? `분당 ${profile.words_per_minute}단어` : null;
+  return [sourceLabel, pace, wpm].filter(Boolean).join(" · ");
+}
+
 function getSituation({ elapsed, wordsPerMinute, syllablesPerSecond, silenceStreak, voiceActive, secondsSinceRecognized, overlap }) {
   if (elapsed < 5) return "opening";
   if (silenceStreak >= 8) return "longSilence";
@@ -1051,11 +1061,7 @@ function SetupPage({
                 <div>
                   <strong>{referenceVideo.title || `YouTube 영상 ${referenceVideo.video_id}`}</strong>
                   <span>{referenceVideo.author_name}</span>
-                  <span>
-                    {referenceVideo.reference_profile
-                      ? `음성 분석됨 · 초당 ${referenceVideo.reference_profile.syllables_per_second}음절`
-                      : "음성 분석이 안 되면 기본 기준 적용"}
-                  </span>
+                  <span>{formatReferenceStatus(referenceVideo)}</span>
                 </div>
               </div>
               <ReferenceQuickAnalysis referenceVideo={referenceVideo} />
@@ -1169,6 +1175,7 @@ function SetupPage({
 function ReferenceQuickAnalysis({ referenceVideo }) {
   const profile = referenceVideo?.reference_profile || {};
   const targets = referenceVideo?.benchmark_targets || {};
+  const keywords = profile.top_keywords || [];
   const items = [
     {
       label: "말하기 속도",
@@ -1189,14 +1196,27 @@ function ReferenceQuickAnalysis({ referenceVideo }) {
   ];
 
   return (
-    <div className="reference-analysis-grid">
-      {items.map((item) => (
-        <div className="reference-analysis-item" key={item.label}>
-          <span>{item.label}</span>
-          <p>{item.value}</p>
-        </div>
-      ))}
-    </div>
+    <>
+      <div className="reference-analysis-note">
+        <strong>Reference Profile</strong>
+        <p>{referenceVideo.analysis_note || "영상 레퍼런스 기준을 만들었습니다."}</p>
+        {keywords.length ? (
+          <div>
+            {keywords.slice(0, 6).map((keyword) => (
+              <span key={keyword}>{keyword}</span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div className="reference-analysis-grid">
+        {items.map((item) => (
+          <div className="reference-analysis-item" key={item.label}>
+            <span>{item.label}</span>
+            <p>{item.value}</p>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 

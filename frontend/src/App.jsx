@@ -1,8 +1,10 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
-import { BarChart3, Clock3, FileText, Leaf, Loader2, MessageCircle, Mic, Play, Search, RefreshCcw, SquarePlay, Upload } from "lucide-react";
+import { BarChart3, FileText, Leaf, Loader2, Play, Search, RefreshCcw, SquarePlay, Upload } from "lucide-react";
+import PreFeedbackPage from "./components/PreFeedbackPage";
 import PracticePage from "./components/PracticePage";
 import ReferenceQuickAnalysis from "./components/ReferenceQuickAnalysis";
 import { audience, situationMessages } from "./data/audience";
+import { preFeedbackMock } from "./data/preFeedbackMock";
 import {
   buildPreparationSignature,
   clamp,
@@ -20,17 +22,14 @@ import {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
-const analysisItems = [
-  { label: "말 빠르기", icon: Mic },
-  { label: "침묵 구간", icon: Clock3 },
-  { label: "대본 전달력", icon: BarChart3 },
-  { label: "쿠션어 사용", icon: MessageCircle },
-  { label: "전환 문장 타이밍", icon: Clock3 },
-  { label: "마무리 밀도", icon: BarChart3 },
-];
+function pageFromPath(pathname) {
+  if (pathname === "/pre-feedback" || pathname === "/feedback/pre") return "preFeedback";
+  if (pathname === "/records") return "report";
+  return "setup";
+}
 
 function App() {
-  const [page, setPage] = useState("setup");
+  const [page, setPage] = useState(() => pageFromPath(window.location.pathname));
   const [script, setScript] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [isPresenting, setIsPresenting] = useState(false);
@@ -681,6 +680,7 @@ function App() {
   const reset = () => {
     cleanupRecording();
     setPage("setup");
+    window.history.pushState({}, "", "/");
     setSessionId("");
     sessionIdRef.current = "";
     setIsPresenting(false);
@@ -712,8 +712,37 @@ function App() {
   const backToSetup = () => {
     cleanupRecording();
     setPage("setup");
+    window.history.pushState({}, "", "/");
     setIsPresenting(false);
     isPresentingRef.current = false;
+  };
+
+  const goToSetup = () => {
+    cleanupRecording();
+    setPage("setup");
+    window.history.pushState({}, "", "/");
+    setIsPresenting(false);
+    isPresentingRef.current = false;
+  };
+
+  const goToPreFeedback = () => {
+    cleanupRecording();
+    setPage("preFeedback");
+    window.history.pushState({}, "", "/pre-feedback");
+    setIsPresenting(false);
+    isPresentingRef.current = false;
+  };
+
+  const goToRecords = () => {
+    cleanupRecording();
+    setPage("report");
+    window.history.pushState({}, "", "/records");
+    setIsPresenting(false);
+    isPresentingRef.current = false;
+  };
+
+  const handleDeferredFeedbackAction = (actionName) => {
+    console.info(`Pre-feedback action queued: ${actionName}`);
   };
 
   useEffect(() => () => cleanupRecording(), []);
@@ -721,6 +750,23 @@ function App() {
   useEffect(() => {
     refreshAiStatus();
   }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setPage(pageFromPath(window.location.pathname));
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  const topNavigation = (
+    <AppNav
+      currentPage={page}
+      goToPreFeedback={goToPreFeedback}
+      goToRecords={goToRecords}
+      goToSetup={goToSetup}
+    />
+  );
 
   return (
     <main className={`app-shell page-${page}`}>
@@ -746,6 +792,20 @@ function App() {
             setScript={setScript}
             preparePresentation={preparePresentation}
             startPresentation={startPresentation}
+            topNavigation={topNavigation}
+            openPreFeedback={goToPreFeedback}
+          />
+        )}
+
+        {page === "preFeedback" && (
+          <PreFeedbackPage
+            data={preFeedbackMock}
+            onRewriteScript={() => handleDeferredFeedbackAction("rewrite-script")}
+            onShortenScript={() => handleDeferredFeedbackAction("shorten-to-three-minutes")}
+            onSuggestSlideCopy={() => handleDeferredFeedbackAction("suggest-slide-copy")}
+            onStartPractice={startPresentation}
+            sourceScript={script}
+            topNavigation={topNavigation}
           />
         )}
 
@@ -788,6 +848,22 @@ function App() {
   );
 }
 
+function AppNav({ currentPage, goToPreFeedback, goToRecords, goToSetup }) {
+  return (
+    <nav className="brand-nav" aria-label="서비스">
+      <button className="brand-mark" type="button" onClick={goToSetup} aria-label="Pitch up">
+        <span className="brand-spark"><Leaf size={13} /></span>
+        Pitch up
+      </button>
+      <div className="nav-links" aria-label="주요 메뉴">
+        <button className={currentPage === "preFeedback" ? "active" : ""} type="button" onClick={goToPreFeedback}>사전 피드백</button>
+        <button className={currentPage === "setup" || currentPage === "practice" ? "active" : ""} type="button" onClick={goToSetup}>발표 연습</button>
+        <button className={currentPage === "report" ? "active" : ""} type="button" onClick={goToRecords}>기록</button>
+      </div>
+    </nav>
+  );
+}
+
 function SetupPage({
   aiStatus,
   error,
@@ -808,12 +884,15 @@ function SetupPage({
   setScript,
   preparePresentation,
   startPresentation,
+  topNavigation,
+  openPreFeedback,
 }) {
   const [dragging, setDragging] = useState(false);
+  const [shouldScrollToFeedback, setShouldScrollToFeedback] = useState(false);
   const fileInputRef = useRef(null);
+  const preflightRef = useRef(null);
   const scriptWords = tokenCount(script);
   const estimatedMinutes = Math.max(1, Math.round(scriptWords / 135));
-  const keywordEstimate = scriptWords ? Math.min(12, Math.max(1, Math.round(scriptWords / 18))) : 0;
 
   const handleDrop = (event) => {
     event.preventDefault();
@@ -821,36 +900,29 @@ function SetupPage({
     importMixedFiles(event.dataTransfer.files);
   };
 
+  const handleScriptFeedback = async () => {
+    setShouldScrollToFeedback(true);
+    await preparePresentation();
+  };
+
+  useEffect(() => {
+    if (!shouldScrollToFeedback || (!scriptFeedback && !materialFeedback)) return;
+    preflightRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setShouldScrollToFeedback(false);
+  }, [materialFeedback, scriptFeedback, shouldScrollToFeedback]);
+
   return (
     <>
-      <nav className="brand-nav" aria-label="서비스">
-        <a className="brand-mark" href="#top" aria-label="온라인 발표 연습실">
-          <span className="brand-spark"><Leaf size={13} /></span>
-          rehearsal note
-        </a>
-        <div className="nav-links">
-          <a href="#script">대본</a>
-          <a href="#insight">피드백</a>
-          <a href="#script">시작</a>
-        </div>
-      </nav>
+      {topNavigation}
 
       <header className="product-header">
         <div className="hero-copy">
           <p className="eyebrow">Presentation rehearsal</p>
           <h1>
-            내가 닮을 발표
+            PT를 쉽게
             <span>Pitch up</span>
           </h1>
           <div className="hero-actions">
-            <button
-              className="secondary-button"
-              disabled={isPreparing || isStarting}
-              onClick={preparePresentation}
-            >
-              {isPreparing ? <Loader2 className="spin" size={18} /> : <BarChart3 size={18} />}
-              {isPreparing ? "사전 분석 중" : "사전 분석"}
-            </button>
             <button
               className="primary-button"
               disabled={isPreparing || isStarting}
@@ -887,10 +959,16 @@ function SetupPage({
             <FileText size={20} />
             <strong>대본이나 발표 자료를 여기에 놓으세요</strong>
             <span>대본 파일과 발표 자료 파일을 한 번에 올리면, 대본은 자동으로 읽고 PDF/PPTX는 자료 분석 대상으로 함께 등록합니다.</span>
-            <button className="file-button" type="button" disabled={isImporting} onClick={() => fileInputRef.current?.click()}>
-              {isImporting ? <Loader2 className="spin" size={17} /> : <Upload size={17} />}
-              {isImporting ? "불러오는 중" : "파일 불러오기"}
-            </button>
+            <div className="script-drop-actions">
+              <button className="script-feedback-button" type="button" disabled={isPreparing || isStarting} onClick={handleScriptFeedback}>
+                {isPreparing ? <Loader2 className="spin" size={17} /> : <BarChart3 size={17} />}
+                {isPreparing ? "분석 중" : "대본 피드백"}
+              </button>
+              <button className="file-button" type="button" disabled={isImporting} onClick={() => fileInputRef.current?.click()}>
+                {isImporting ? <Loader2 className="spin" size={17} /> : <Upload size={17} />}
+                {isImporting ? "불러오는 중" : "파일 불러오기"}
+              </button>
+            </div>
             <input
               ref={fileInputRef}
               hidden
@@ -914,6 +992,62 @@ function SetupPage({
       </header>
 
       {error && <div className="notice">{error}</div>}
+
+      {(scriptFeedback || materialFeedback) ? (
+        <section className="preflight-feedback" ref={preflightRef}>
+          <div className="section-heading">
+            <h3>발표 시작 전 피드백</h3>
+            <span>{sessionPrepared ? "분석 완료" : "다시 분석 필요"}</span>
+          </div>
+          <div className="preflight-grid">
+            <article className="preflight-card">
+              <strong>대본 피드백</strong>
+              {scriptFeedback ? (
+                <>
+                  <div className="preflight-score">{scriptFeedback.score ?? 0}점</div>
+                  <p>단어 수 {scriptFeedback.word_count ?? 0}개, 문장 평균 {scriptFeedback.average_sentence_words ?? 0}단어</p>
+                  <ul>
+                    {(scriptFeedback.suggestions || []).slice(0, 3).map((suggestion) => (
+                      <li key={suggestion}>{suggestion}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p>대본 피드백 버튼을 누르면 대본 전달력 피드백이 여기에 표시됩니다.</p>
+              )}
+            </article>
+
+            <article className="preflight-card">
+              <strong>발표 자료 피드백</strong>
+              {materialFeedback ? (
+                <>
+                  <div className="preflight-metrics">
+                    <span>예상 {materialFeedback.estimated_minutes ?? 0}분</span>
+                    <span>시인성 {materialFeedback.clarity_score ?? 0}</span>
+                    <span>통일성 {materialFeedback.consistency_score ?? 0}</span>
+                    <span>주제 적합도 {materialFeedback.topic_fit_score ?? 0}</span>
+                  </div>
+                  <p>{materialFeedback.summary}</p>
+                  {materialFeedback.notes?.length ? (
+                    <ul>
+                      {materialFeedback.notes.slice(0, 3).map((note) => (
+                        <li key={note}>{note}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </>
+              ) : (
+                <p>발표 자료를 함께 올리면 자료별 시인성과 주제 적합도 피드백이 여기에 표시됩니다.</p>
+              )}
+            </article>
+          </div>
+          <div className="preflight-actions">
+            <button className="secondary-button" type="button" onClick={openPreFeedback}>
+              자세히 수정해보기
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <div className="reference-link-panel">
         <div className="reference-link-copy">
@@ -955,103 +1089,6 @@ function SetupPage({
           )}
         </div>
       </div>
-
-      <section className="setup-grid">
-        <aside className="hero-dashboard setup-dashboard" aria-label="리허설 프리뷰">
-          <div className="dashboard-topline">
-            <span>session brief</span>
-            <strong>{scriptWords || 0} words</strong>
-          </div>
-          <div className="preview-metrics">
-            <div className="preview-card raised">
-              <Clock3 size={18} />
-              <span>예상 시간</span>
-              <strong>{estimatedMinutes}<small>분</small></strong>
-            </div>
-            <div className="preview-card">
-              <BarChart3 size={18} />
-              <span>피드백</span>
-              <strong>{analysisItems.length}<small>가지</small></strong>
-            </div>
-          </div>
-          <div className="mini-chart" aria-label="리허설 분석 예시">
-            <div className="brief-line">
-              <span>pace</span>
-              <strong>5.9 syll/sec</strong>
-            </div>
-            <div className="brief-line">
-              <span>pause</span>
-              <strong>2.4 sec longest</strong>
-            </div>
-            <div className="brief-line">
-              <span>script</span>
-              <strong>{keywordEstimate ? `핵심어 ${keywordEstimate}개 후보` : "대본 입력 대기"}</strong>
-            </div>
-            <p className="brief-copy">문장 끝에서 호흡이 조금 짧습니다. 두 번째 전환부 앞에 쉼표를 하나 더 두세요.</p>
-          </div>
-        </aside>
-
-        <aside className="ready-panel" id="insight">
-          <div className="service-checklist">
-            <h2>조용히 봐드릴 부분</h2>
-            <p>발표를 끊지 않고, 끝난 뒤 필요한 부분만 부드럽게 정리합니다.</p>
-            {analysisItems.map(({ icon: Icon, label }) => (
-              <span key={label}><Icon size={15} />{label}</span>
-            ))}
-          </div>
-        </aside>
-      </section>
-
-      {(scriptFeedback || materialFeedback) ? (
-        <section className="preflight-feedback">
-          <div className="section-heading">
-            <h3>발표 시작 전 피드백</h3>
-            <span>{sessionPrepared ? "분석 완료" : "다시 분석 필요"}</span>
-          </div>
-          <div className="preflight-grid">
-            <article className="preflight-card">
-              <strong>대본 피드백</strong>
-              {scriptFeedback ? (
-                <>
-                  <div className="preflight-score">{scriptFeedback.score ?? 0}점</div>
-                  <p>단어 수 {scriptFeedback.word_count ?? 0}개, 문장 평균 {scriptFeedback.average_sentence_words ?? 0}단어</p>
-                  <ul>
-                    {(scriptFeedback.suggestions || []).slice(0, 3).map((suggestion) => (
-                      <li key={suggestion}>{suggestion}</li>
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                <p>사전 분석을 받으면 대본 전달력 피드백이 여기에 표시됩니다.</p>
-              )}
-            </article>
-
-            <article className="preflight-card">
-              <strong>발표 자료 피드백</strong>
-              {materialFeedback ? (
-                <>
-                  <div className="preflight-metrics">
-                    <span>예상 {materialFeedback.estimated_minutes ?? 0}분</span>
-                    <span>시인성 {materialFeedback.clarity_score ?? 0}</span>
-                    <span>통일성 {materialFeedback.consistency_score ?? 0}</span>
-                    <span>주제 적합도 {materialFeedback.topic_fit_score ?? 0}</span>
-                  </div>
-                  <p>{materialFeedback.summary}</p>
-                  {materialFeedback.notes?.length ? (
-                    <ul>
-                      {materialFeedback.notes.slice(0, 3).map((note) => (
-                        <li key={note}>{note}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </>
-              ) : (
-                <p>발표 자료를 함께 올리면 자료별 시인성과 주제 적합도 피드백이 여기에 표시됩니다.</p>
-              )}
-            </article>
-          </div>
-        </section>
-      ) : null}
     </>
   );
 }

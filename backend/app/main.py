@@ -64,6 +64,7 @@ from .runtime_state import (
 from .session_store import append_metric as persist_metric
 from .session_store import init_session_store, load_session as load_persisted_session, save_session
 from .services.gemini_service import call_gemini_api
+from .services.reference_compare_service import build_user_profile_from_samples, compare_with_reference
 from .services.reference_service import build_reference_comparison, build_reference_video
 from .services.text_service import (
     clamp,
@@ -539,7 +540,8 @@ def sanitize_report_for_user(report: dict[str, Any]) -> dict[str, Any]:
     report["summary"] = user_facing_summary(report)
     report["strengths"] = unique_feedback_items(report.get("strengths") or [], 4) or ["리허설 데이터를 안정적으로 수집했습니다."]
     report["improvements"] = unique_feedback_items(report.get("improvements") or [], 6)
-    report["issue_log"] = unique_issue_log(report.get("issue_log") or [], 6)
+    report["issue_log"] = unique_issue_log(report.get("issue_log") or [], 12)
+    report["timeline_log"] = [clean_issue_item(item) for item in (report.get("timeline_log") or [])[:20]]
 
     detailed_feedback = dict(report.get("detailed_feedback") or {})
     detailed_feedback["priority_feedback"] = unique_feedback_items(
@@ -551,6 +553,69 @@ def sanitize_report_for_user(report: dict[str, Any]) -> dict[str, Any]:
         detailed_feedback["coach_note"] = clean_user_text(detailed_feedback.get("coach_note"))
     report["detailed_feedback"] = detailed_feedback
     return report
+
+
+def merge_report_with_fallback(
+    report: dict[str, Any],
+    fallback_report: dict[str, Any],
+    transcript: str,
+) -> dict[str, Any]:
+    merged = dict(fallback_report)
+    merged.update(report or {})
+
+    merged["pace"] = fallback_report.get("pace")
+    merged["silence"] = fallback_report.get("silence")
+    merged["rhythm"] = fallback_report.get("rhythm")
+    merged["delivery_match"] = fallback_report.get("delivery_match")
+    merged["analysis_meta"] = fallback_report.get("analysis_meta")
+    merged["speech_habits"] = fallback_report.get("speech_habits")
+    merged["keyword_feedback"] = fallback_report.get("keyword_feedback")
+    merged["presentation_material"] = fallback_report.get("presentation_material")
+    merged["audience_reactions"] = fallback_report.get("audience_reactions")
+    merged["criteria_basis"] = fallback_report.get("criteria_basis")
+    merged["issue_log"] = report.get("issue_log") or fallback_report.get("issue_log") or []
+    merged["timeline_log"] = report.get("timeline_log") or fallback_report.get("timeline_log") or []
+    merged["reference_video"] = report.get("reference_video") or fallback_report.get("reference_video")
+    merged["reference_comparison"] = report.get("reference_comparison") or fallback_report.get("reference_comparison")
+
+    analysis_meta = fallback_report.get("analysis_meta") or {}
+    cautious_mode = analysis_meta.get("level") != "full" or (fallback_report.get("overall_score") or 0) < 65
+    if cautious_mode:
+        merged["strengths"] = fallback_report.get("strengths") or []
+    else:
+        merged["strengths"] = unique_feedback_items(
+            (fallback_report.get("strengths") or []) + (report.get("strengths") or []),
+            4,
+        )
+
+    merged["improvements"] = unique_feedback_items(
+        (report.get("improvements") or []) + (fallback_report.get("improvements") or []),
+        6,
+    )
+
+    fallback_detail = fallback_report.get("detailed_feedback") or {}
+    report_detail = report.get("detailed_feedback") or {}
+    merged["detailed_feedback"] = {
+        "priority_feedback": unique_feedback_items(
+            (report_detail.get("priority_feedback") or []) + (fallback_detail.get("priority_feedback") or []),
+            5,
+        ),
+        "practice_plan": unique_feedback_items(
+            (report_detail.get("practice_plan") or []) + (fallback_detail.get("practice_plan") or []),
+            5,
+        ),
+        "coach_note": report_detail.get("coach_note") or fallback_detail.get("coach_note") or "",
+    }
+    merged["transcript_full"] = transcript.strip()
+    merged["analysis_basis"] = {
+        "analysis_source": "gemini_plus_heuristic" if merged.get("used_gemini") else "heuristic",
+        "timeline_count": len(merged.get("timeline_log") or []),
+        "issue_count": len(merged.get("issue_log") or []),
+        "speech_samples": analysis_meta.get("speech_samples", 0),
+        "spoken_words": analysis_meta.get("spoken_words", 0),
+        "duration_seconds": analysis_meta.get("duration_seconds", 0),
+    }
+    return merged
 
 
 def build_issue_log(session: SessionState, transcript: str) -> list[dict[str, Any]]:
@@ -784,10 +849,6 @@ def build_timeline_log(session: SessionState) -> list[dict[str, Any]]:
         logs.append(classify_timeline_window(script_tokens, window, previous_transcript))
         previous_transcript = window[-1].transcript.strip()
 
-    if len(logs) > 18:
-        indices = sample_indices(len(logs), 18)
-        logs = [logs[index] for index in indices]
-
     return logs
 
 
@@ -816,8 +877,14 @@ def build_detailed_feedback(report: dict[str, Any], issue_log: list[dict[str, An
     silence = report["silence"]
     rhythm = report["rhythm"]
     delivery = report["delivery_match"]
+    analysis_meta = report.get("analysis_meta") or {}
 
     priorities = []
+    if issue_log:
+        primary_issue = issue_log[0]
+        priorities.append(
+            f"{primary_issue['time']} 구간에서 {primary_issue['title']}이 확인됐습니다. {primary_issue['suggestion']}"
+        )
     if silence["pause_ratio_percent"] >= 25 or silence["longest_seconds"] >= 6:
         priorities.append("침묵 복구 문장을 먼저 준비하세요. 멈췄을 때 바로 이어갈 문장 하나가 전체 전달력을 크게 올립니다.")
     if pace["syllables_per_second"] > 6.8:
@@ -839,13 +906,210 @@ def build_detailed_feedback(report: dict[str, Any], issue_log: list[dict[str, An
     ]
 
     if issue_log:
-        practice_plan.insert(1, f"가장 먼저 고칠 구간은 {issue_log[0]['time']}의 '{issue_log[0]['title']}'입니다.")
+        practice_plan.insert(1, f"가장 먼저 볼 구간은 {issue_log[0]['time']}의 '{issue_log[0]['title']}'입니다.")
 
     return {
         "priority_feedback": unique_feedback_items(priorities, 5),
         "practice_plan": practice_plan,
-        "coach_note": "아래 로그는 발표 중 저장된 누적 음성 인식 결과와 속도/침묵 샘플을 바탕으로 만든 근거입니다.",
+        "coach_note": (
+            f"아래 내용은 총 {analysis_meta.get('spoken_words', 0)}개의 인식 단어와 "
+            f"{analysis_meta.get('speech_samples', 0)}개 인식 구간, 그리고 속도/침묵 기록을 바탕으로 만든 근거입니다."
+        ),
     }
+
+
+def count_phrase_occurrences(tokens: list[str], phrases: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for phrase in phrases:
+        phrase_tokens = tokenize(phrase)
+        if not phrase_tokens:
+            continue
+        if len(phrase_tokens) == 1:
+            count = sum(1 for token in tokens if token == phrase_tokens[0])
+        else:
+            count = 0
+            last_index = len(tokens) - len(phrase_tokens) + 1
+            for index in range(max(0, last_index)):
+                if tokens[index : index + len(phrase_tokens)] == phrase_tokens:
+                    count += 1
+        if count:
+            counts[phrase] = count
+    return counts
+
+
+def build_speech_habits(transcript: str) -> dict[str, Any]:
+    normalized = re.sub(r"\s+", " ", transcript).strip()
+    tokens = tokenize(normalized)
+    filler_counts = count_phrase_occurrences(
+        tokens,
+        ["어", "음", "그", "약간", "조금", "좀", "사실", "일단", "그러니까", "뭔가"],
+    )
+    vague_counts = count_phrase_occurrences(
+        tokens,
+        ["이런", "그런", "이 부분", "저 부분", "뭔가", "약간", "같은 경우"],
+    )
+    repair_counts = count_phrase_occurrences(
+        tokens,
+        ["아 아니", "다시 말하면", "정정하자면", "그러니까 다시", "아 잠시만"],
+    )
+
+    token_counter: dict[str, int] = {}
+    for token in tokens:
+        if len(token) <= 1:
+            continue
+        token_counter[token] = token_counter.get(token, 0) + 1
+
+    repeated_tokens = [
+        {"token": token, "count": count}
+        for token, count in sorted(token_counter.items(), key=lambda item: (-item[1], item[0]))
+        if count >= 3
+    ][:5]
+
+    sentence_endings = {
+        key: value
+        for key, value in {
+            "습니다": normalized.count("습니다"),
+            "같습니다": normalized.count("같습니다"),
+            "거든요": normalized.count("거든요"),
+            "해요": normalized.count("해요"),
+        }.items()
+        if value
+    }
+
+    filler_total = sum(filler_counts.values())
+    vague_total = sum(vague_counts.values())
+    repair_total = sum(repair_counts.values())
+    token_total = max(1, len(tokens))
+
+    notes = []
+    if filler_total >= 4:
+        notes.append("추임새가 자주 들어가 문장 전달력이 흐려질 수 있습니다.")
+    if vague_total >= 3:
+        notes.append("모호한 지시 표현이 반복돼 핵심 메시지가 흐려질 수 있습니다.")
+    if repair_total >= 2:
+        notes.append("말을 중간에 고쳐 말하는 패턴이 반복됩니다.")
+    if repeated_tokens:
+        notes.append(f"반복 표현이 눈에 띕니다: {', '.join(item['token'] for item in repeated_tokens[:3])}")
+    if not notes:
+        notes.append("눈에 띄는 말 습관 과다는 크지 않았습니다.")
+
+    return {
+        "filler_counts": filler_counts,
+        "filler_total": filler_total,
+        "filler_ratio_percent": round(filler_total / token_total * 100, 1),
+        "vague_counts": vague_counts,
+        "vague_total": vague_total,
+        "repair_counts": repair_counts,
+        "repair_total": repair_total,
+        "repeated_tokens": repeated_tokens,
+        "sentence_endings": sentence_endings,
+        "notes": notes[:4],
+    }
+
+
+def build_analysis_meta(samples: list[MetricSample], transcript: str) -> dict[str, Any]:
+    spoken_words = len(tokenize(transcript))
+    duration_seconds = round(samples[-1].elapsed_seconds, 1) if samples else 0.0
+    speech_samples = len([sample for sample in samples if sample.speech_detected])
+
+    if duration_seconds < 15 or spoken_words < 20 or speech_samples < 2:
+        level = "insufficient"
+    elif duration_seconds < 40 or spoken_words < 60 or speech_samples < 5:
+        level = "preliminary"
+    else:
+        level = "full"
+
+    return {
+        "level": level,
+        "duration_seconds": duration_seconds,
+        "spoken_words": spoken_words,
+        "speech_samples": speech_samples,
+        "score_visible": level != "insufficient",
+        "summary_label": {
+            "insufficient": "분석 보류",
+            "preliminary": "예비 분석",
+            "full": "정식 분석",
+        }[level],
+    }
+
+
+def build_stt_detailed_feedback(report: dict[str, Any], issue_log: list[dict[str, Any]]) -> dict[str, Any]:
+    pace = report["pace"]
+    silence = report["silence"]
+    rhythm = report["rhythm"]
+    habits = report.get("speech_habits") or {}
+    analysis_meta = report.get("analysis_meta") or {}
+
+    if analysis_meta.get("level") == "insufficient":
+        return {
+            "priority_feedback": ["말한 내용이 아직 짧아서, 먼저 기본 흐름을 더 모아보는 게 좋습니다."],
+            "practice_plan": [
+                "최소 30초 이상 한 흐름으로 말해 보세요.",
+                "핵심 문장 3개를 끊지 않고 연결해서 한 번 더 말해 보세요.",
+            ],
+            "coach_note": "지금 결과는 말한 내용이 아직 적어서, 가볍게 참고하는 정도로 보면 좋습니다.",
+        }
+
+    priorities = []
+    if silence["pause_ratio_percent"] >= 25 or silence["longest_seconds"] >= 6:
+        priorities.append("잠깐 멈추는 구간이 조금 있습니다. 다음 문장으로 넘어갈 연결 문장을 미리 준비해 두세요.")
+    if pace["syllables_per_second"] > 6.8:
+        priorities.append("말 속도가 조금 빠릅니다. 핵심 정보가 밀리지 않도록 문장 끝을 또렷하게 전해보세요.")
+    elif pace["syllables_per_second"] < 5.0:
+        priorities.append("말 속도가 다소 느려 전체 흐름이 처질 수 있습니다. 첫 문장을 좀 더 힘 있게 시작해 보세요.")
+    if rhythm["rate_variability"] > 1.2:
+        priorities.append("구간별 속도 차이가 커서 흐름이 흔들립니다. 문장 사이 호흡을 조금 더 일정하게 맞춰보세요.")
+    if habits.get("filler_total", 0) >= 4:
+        priorities.append("추임새가 자주 들립니다. 문장을 시작하기 전에 핵심어를 먼저 떠올리고 바로 말해보세요.")
+    if habits.get("vague_total", 0) >= 3:
+        priorities.append("표현이 조금 두루뭉술하게 들립니다. '이 부분' 대신 구체적인 대상이나 숫자를 바로 말해보세요.")
+
+    if not priorities:
+        priorities.append("속도와 호흡이 비교적 안정적입니다. 강조할 핵심 문장만 더 또렷하게 세워보세요.")
+
+    practice_plan = [
+        "타임라인 로그에서 가장 흔들린 구간 1개를 골라 같은 내용으로 2번만 다시 말해보세요.",
+        "한 번은 속도만, 한 번은 추임새 제거만 신경 써서 비교 연습해보세요.",
+    ]
+
+    if issue_log:
+        practice_plan.insert(1, f"먼저 손볼 구간은 {issue_log[0]['time']}의 '{issue_log[0]['title']}'입니다.")
+    if habits.get("filler_total", 0) >= 4:
+        practice_plan.append("추임새가 나온 문장을 그대로 적고, 같은 뜻을 더 짧고 단정하게 다시 말해보세요.")
+    elif habits.get("vague_total", 0) >= 3:
+        practice_plan.append("모호한 표현을 구체 명사로 바꿔 같은 문장을 다시 말해보세요.")
+    else:
+        practice_plan.append("비교적 안정적인 편이니, 핵심 문장 강조만 따로 연습해도 좋습니다.")
+
+    return {
+        "priority_feedback": priorities[:5],
+        "practice_plan": practice_plan[:4],
+        "coach_note": "이번 리포트는 말한 흐름과 구간별 기록을 바탕으로 정리한 결과입니다.",
+    }
+
+
+def polish_user_report_text(value: Any) -> Any:
+    if isinstance(value, str):
+        replacements = {
+            "STT": "말한 내용",
+            "transcript": "말한 내용",
+            "sample": "기록",
+            "analysis_meta": "분석 단계",
+            "speech_habits": "말 습관",
+            "spoken_words": "말한 단어 수",
+            "speech_samples": "기록된 발화 수",
+        }
+        polished = value
+        for source, target in replacements.items():
+            polished = polished.replace(source, target)
+        polished = polished.replace("기준으로 만든 결과입니다.", "기준으로 정리한 결과입니다.")
+        polished = polished.replace("기준입니다.", "기준으로 살펴봤습니다.")
+        return polished
+    if isinstance(value, list):
+        return [polish_user_report_text(item) for item in value]
+    if isinstance(value, dict):
+        return {key: polish_user_report_text(item) for key, item in value.items()}
+    return value
 
 
 def presentation_criteria() -> dict[str, Any]:
@@ -965,9 +1229,9 @@ def build_ai_prompt_payload(session: SessionState, fallback_report: dict[str, An
             "pace": fallback_report.get("pace"),
             "silence": fallback_report.get("silence"),
             "rhythm": fallback_report.get("rhythm"),
-            "script": fallback_report.get("script"),
             "delivery_match": fallback_report.get("delivery_match"),
-            "keyword_feedback": fallback_report.get("keyword_feedback"),
+            "analysis_meta": fallback_report.get("analysis_meta"),
+            "speech_habits": fallback_report.get("speech_habits"),
             "issue_log": compact_issue_log(fallback_report.get("issue_log") or []),
             "timeline_log": compact_issue_log(fallback_report.get("timeline_log") or [], 8),
             "detailed_feedback": {
@@ -976,9 +1240,9 @@ def build_ai_prompt_payload(session: SessionState, fallback_report: dict[str, An
                 "coach_note": compact_text(detailed_feedback.get("coach_note", ""), 160),
             },
             "criteria_basis": fallback_report.get("criteria_basis"),
-            "presentation_material": fallback_report.get("presentation_material", {}),
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
+            "reference_speaker_comparison": fallback_report.get("reference_speaker_comparison"),
             "audience_reactions": fallback_report.get("audience_reactions", {}),
         },
         "required_schema": {
@@ -989,16 +1253,16 @@ def build_ai_prompt_payload(session: SessionState, fallback_report: dict[str, An
             "pace": fallback_report["pace"],
             "silence": fallback_report["silence"],
             "rhythm": fallback_report["rhythm"],
-            "script": fallback_report["script"],
             "delivery_match": fallback_report["delivery_match"],
-            "keyword_feedback": fallback_report["keyword_feedback"],
+            "analysis_meta": fallback_report["analysis_meta"],
+            "speech_habits": fallback_report["speech_habits"],
             "issue_log": fallback_report["issue_log"],
             "timeline_log": fallback_report.get("timeline_log", []),
             "detailed_feedback": fallback_report["detailed_feedback"],
             "criteria_basis": fallback_report["criteria_basis"],
-            "presentation_material": fallback_report.get("presentation_material", {}),
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
+            "reference_speaker_comparison": fallback_report.get("reference_speaker_comparison"),
             "audience_reactions": fallback_report["audience_reactions"],
         },
     }
@@ -1518,6 +1782,9 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
     transcript_set = set(transcript_tokens)
     overlap = len(script_tokens & transcript_set) / len(script_tokens) if script_tokens else 0
     material_feedback = build_material_feedback(session.script, session.materials)
+    keyword_feedback = build_keyword_feedback(session.script, transcript)
+    analysis_meta = build_analysis_meta(samples, transcript)
+    speech_habits = build_speech_habits(transcript)
 
     elapsed = last_sample.elapsed_seconds if last_sample else 0
     total_silence = last_sample.silence_seconds if last_sample else 0
@@ -1558,23 +1825,29 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         pause_score = min(pause_score, 55)
     gap_score = score_distance(rate_gap, 1.1, 0.9)
     rhythm_score = clamp(100 - rate_variability * 22 - slow_sample_ratio * 35, 35, 100)
-    match_score = overlap * 100
-    script_score = script_quality(session.script)["score"]
+    habit_penalty = min(18, speech_habits["filler_total"] * 1.6 + speech_habits["vague_total"] * 1.2 + speech_habits["repair_total"] * 2.0)
+    habit_score = clamp(100 - habit_penalty, 45, 100)
     overall = round(
         clamp(
-            pace_score * 0.24
-            + pause_score * 0.24
+            pace_score * 0.3
+            + pause_score * 0.28
             + gap_score * 0.12
-            + rhythm_score * 0.12
-            + script_score * 0.16
-            + match_score * 0.12,
+            + rhythm_score * 0.15
+            + habit_score * 0.15,
             0,
             100,
         )
     )
+    if analysis_meta["level"] == "insufficient":
+        overall = 0
+    elif analysis_meta["level"] == "preliminary":
+        overall = round(min(overall, 79))
 
     strengths = []
     improvements = []
+    if analysis_meta["level"] == "insufficient":
+        strengths.append("짧게라도 말한 내용이 모여 기본 흐름은 확인할 수 있었습니다.")
+        improvements.append("발화 길이가 짧아 신뢰도 있는 분석이 어렵습니다. 30초 이상 이어서 말해보세요.")
     if 5.6 <= speech_rate <= 6.3:
         strengths.append("말 속도가 안정적이라 핵심 내용이 따라가기 좋습니다.")
     elif speech_rate < 5.0:
@@ -1596,14 +1869,15 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
 
     if rate_variability > 1.2 or slow_sample_ratio > 0.35:
         improvements.append("구간별 속도 변동이 큽니다. 한 문장 안에서는 일정한 리듬을 유지하고 문장 끝에서만 쉬어보세요.")
-    if overlap <= 0.55:
-        improvements.append("대본의 핵심 키워드를 더 명확히 말하면 메시지 일관성과 전달력이 좋아집니다.")
 
-    quality = script_quality(session.script)
-    improvements.extend(quality["suggestions"])
+    if speech_habits["filler_total"] >= 4:
+        improvements.append("추임새가 반복됩니다. 문장을 시작하기 전에 핵심어를 먼저 정리해 보세요.")
+    if speech_habits["vague_total"] >= 3:
+        improvements.append("모호한 표현이 반복돼 메시지가 흐려질 수 있습니다. 구체 명사를 바로 말해보세요.")
+    if speech_habits["repair_total"] == 0 and analysis_meta["level"] != "insufficient":
+        strengths.append("말을 중간에 고쳐 말하는 패턴이 많지 않아 문장 흐름이 비교적 안정적입니다.")
     issue_log = build_issue_log(session, transcript)
     timeline_log = build_timeline_log(session)
-    keyword_feedback = build_keyword_feedback(session.script, transcript)
 
     report = {
         "overall_score": overall,
@@ -1628,14 +1902,14 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
             "slow_sample_ratio_percent": round(slow_sample_ratio * 100, 1),
             "score": round(rhythm_score),
         },
-        "script": quality,
         "delivery_match": {
-            "similarity_percent": round(overlap * 100),
             "spoken_words": len(transcript_tokens),
             "spoken_syllables": syllables,
         },
-        "keyword_feedback": keyword_feedback,
+        "analysis_meta": analysis_meta,
+        "speech_habits": speech_habits,
         "criteria_basis": presentation_criteria(),
+        "keyword_feedback": keyword_feedback,
         "presentation_material": material_feedback,
         "reference_video": session.reference_video,
         "audience_reactions": reaction_counts,
@@ -1643,6 +1917,15 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         "improvements": unique_feedback_items(improvements, 6),
         "issue_log": issue_log,
         "timeline_log": timeline_log,
+        "transcript_full": transcript.strip(),
+        "analysis_basis": {
+            "analysis_source": "heuristic",
+            "timeline_count": len(timeline_log),
+            "issue_count": len(issue_log),
+            "speech_samples": analysis_meta["speech_samples"],
+            "spoken_words": analysis_meta["spoken_words"],
+            "duration_seconds": analysis_meta["duration_seconds"],
+        },
         "summary": "이번 연습에서 바로 고칠 부분을 중심으로 리포트를 정리했습니다.",
         "used_gemini": False,
     }
@@ -1650,19 +1933,34 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         report["summary"] = f"{report['summary']} 발표 자료의 시간과 시인성도 함께 확인했습니다."
     if session.reference_video:
         report["reference_comparison"] = build_reference_comparison(report, session.reference_video)
-    report["detailed_feedback"] = build_detailed_feedback(report, issue_log)
+    if analysis_meta["level"] == "insufficient":
+        report["summary"] = "말한 내용이 아직 짧아서 점수형 총평보다는 간단한 참고용 분석만 제공했습니다. 30초 이상 이어서 말하면 더 정확해집니다."
+    elif analysis_meta["level"] == "preliminary":
+        report["summary"] = f"{report['summary']} 다만 이번 결과는 가볍게 흐름을 점검하는 예비 결과로 보면 좋습니다."
+    else:
+        report["summary"] = (
+            f"총 {analysis_meta['spoken_words']}개의 인식 단어와 {analysis_meta['speech_samples']}개의 인식 구간을 바탕으로 "
+            f"속도, 침묵, 리듬, 말 습관을 함께 살펴봤습니다."
+        )
+        if issue_log:
+            report["summary"] += f" 가장 먼저 눈에 띈 부분은 {issue_log[0]['title']}입니다."
+    report["detailed_feedback"] = build_stt_detailed_feedback(report, issue_log)
 
     if session.reference_video:
         report["reference_video"] = session.reference_video
         report["reference_comparison"] = build_reference_comparison(report, session.reference_video)
 
-    return sanitize_report_for_user(report)
+    user_reference_profile = build_user_profile_from_samples(samples)
+    if user_reference_profile:
+        report["reference_speaker_comparison"] = compare_with_reference(user_reference_profile)
+
+    return polish_user_report_text(sanitize_report_for_user(report))
 
 
 async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str, Any]) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
-        return sanitize_report_for_user(fallback_report)
+        return polish_user_report_text(sanitize_report_for_user(fallback_report))
 
     allowed, retry_after, remaining = gemini_limiter.allow()
     if not allowed:
@@ -1673,7 +1971,7 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
             "retry_after_seconds": round(retry_after, 1),
             "remaining_calls": remaining,
         }
-        return sanitize_report_for_user(fallback_report)
+        return polish_user_report_text(sanitize_report_for_user(fallback_report))
 
     model = get_gemini_model()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -1704,6 +2002,7 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
             "presentation_material": fallback_report.get("presentation_material", {}),
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
+            "reference_speaker_comparison": fallback_report.get("reference_speaker_comparison"),
             "audience_reactions": fallback_report["audience_reactions"],
             "reference_video": fallback_report.get("reference_video"),
             "reference_comparison": fallback_report.get("reference_comparison"),
@@ -1720,19 +2019,24 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
             response = await client.post(url, params={"key": api_key}, json=payload)
             response.raise_for_status()
             data = response.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            report = json.loads(text)
-            report["used_gemini"] = True
-            return sanitize_report_for_user(report)
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        transcript = fallback_report.get("transcript_full") or (session.samples[-1].transcript if session.samples else "")
+        report = merge_report_with_fallback(json.loads(text), fallback_report, transcript)
+        report["used_gemini"] = True
+        if isinstance(report.get("analysis_basis"), dict):
+            report["analysis_basis"]["analysis_source"] = "gemini_plus_heuristic"
+        report.setdefault("reference_speaker_comparison", fallback_report.get("reference_speaker_comparison"))
+        return polish_user_report_text(sanitize_report_for_user(report))
     except Exception:
         fallback_report["summary"] = "기본 분석으로 리포트를 정리했습니다. 지금 연습에서 바로 고칠 부분을 중심으로 확인해 주세요."
-        return sanitize_report_for_user(fallback_report)
+        return polish_user_report_text(sanitize_report_for_user(fallback_report))
 
 
 async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[str, Any]) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        return sanitize_report_for_user(fallback_report)
+    use_gemini_final_report = os.getenv("ENABLE_GEMINI_FINAL_REPORT", "false").lower() in {"1", "true", "yes"}
+    if not api_key or not use_gemini_final_report:
+        return polish_user_report_text(sanitize_report_for_user(fallback_report))
 
     prompt = build_ai_prompt_payload(session, fallback_report)
     payload = {
@@ -1744,18 +2048,29 @@ async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[
         data, remaining = await call_gemini_api(
             kind="final_report",
             payload=payload,
-            timeout_seconds=40,
+            timeout_seconds=6,
             count_against_limit=True,
-            retry_on_unavailable=2,
+            retry_on_unavailable=0,
         )
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        report = json.loads(text)
+        text = (
+            ((data or {}).get("candidates") or [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text")
+        )
+        if not text:
+            return sanitize_report_for_user(fallback_report)
+        transcript = fallback_report.get("transcript_full") or (session.samples[-1].transcript if session.samples else "")
+        report = merge_report_with_fallback(json.loads(text), fallback_report, transcript)
         report["used_gemini"] = True
+        if isinstance(report.get("analysis_basis"), dict):
+            report["analysis_basis"]["analysis_source"] = "gemini_plus_heuristic"
         report["gemini_limits"] = {
             "rate_limited": False,
             "remaining_calls": remaining,
         }
-        return sanitize_report_for_user(report)
+        report.setdefault("reference_speaker_comparison", fallback_report.get("reference_speaker_comparison"))
+        return polish_user_report_text(sanitize_report_for_user(report))
     except GeminiRateLimitError as exc:
         fallback_report["summary"] = "AI 분석이 잠시 막혀 기본 리포트로 정리했습니다. 지금 바로 고칠 부분부터 확인해 주세요."
         fallback_report["used_gemini"] = False
@@ -1764,11 +2079,11 @@ async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[
             "retry_after_seconds": round(exc.retry_after, 1),
             "remaining_calls": exc.remaining,
         }
-        return sanitize_report_for_user(fallback_report)
+        return polish_user_report_text(sanitize_report_for_user(fallback_report))
     except Exception:
         fallback_report["summary"] = "기본 분석으로 리포트를 정리했습니다. 지금 연습에서 바로 고칠 부분을 중심으로 확인해 주세요."
         fallback_report["used_gemini"] = False
-        return sanitize_report_for_user(fallback_report)
+        return polish_user_report_text(sanitize_report_for_user(fallback_report))
 
 
 @app.get("/api/ai/status")

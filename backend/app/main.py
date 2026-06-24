@@ -12,19 +12,14 @@ from collections import deque
 from datetime import datetime, timezone
 from html import unescape
 from io import BytesIO
-from pathlib import Path
 from statistics import mean, pstdev
-from threading import Lock
 from typing import Any
 from uuid import uuid4
 
 import httpx
-from docx import Document
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pptx import Presentation
-from pydantic import BaseModel, Field
-from pypdf import PdfReader
+from pydantic import BaseModel
 
 try:
     from pypdf import PdfReader
@@ -41,102 +36,34 @@ try:
 except ImportError:  # pragma: no cover - handled gracefully at runtime
     fitz = None
 
-
-class StartSessionRequest(BaseModel):
-    script: str = Field(..., min_length=10)
-    reference_video_url: str | None = None
-
-
-class MetricSample(BaseModel):
-    elapsed_seconds: float = Field(..., ge=0)
-    transcript: str = ""
-    words_spoken: int = Field(0, ge=0)
-    words_per_minute: float = Field(0, ge=0)
-    syllables_spoken: int = Field(0, ge=0)
-    syllables_per_second: float = Field(0, ge=0)
-    articulation_syllables_per_second: float = Field(0, ge=0)
-    silence_seconds: float = Field(0, ge=0)
-    longest_silence_seconds: float = Field(0, ge=0)
-    pause_ratio: float = Field(0, ge=0)
-    volume: float = Field(0, ge=0)
-    reaction: str = "attentive"
-    speech_detected: bool = False
-
-
-class FinishSessionRequest(BaseModel):
-    transcript: str = ""
-
-
-class ImportedScriptResponse(BaseModel):
-    filename: str
-    text: str
-    character_count: int
-    source_type: str
-
-
-class SessionState(BaseModel):
-    id: str
-    script: str
-    created_at: str
-    samples: list[MetricSample] = Field(default_factory=list)
-    materials: list[dict[str, Any]] = Field(default_factory=list)
-    reference_video: dict[str, Any] | None = None
-
-
-class GeminiCallLimiter:
-    def __init__(self, max_calls: int, window_seconds: int) -> None:
-        self.max_calls = max_calls
-        self.window_seconds = window_seconds
-        self._calls: deque[float] = deque()
-        self._lock = Lock()
-
-    def allow(self) -> tuple[bool, float, int]:
-        now = time.monotonic()
-        with self._lock:
-            while self._calls and now - self._calls[0] >= self.window_seconds:
-                self._calls.popleft()
-
-            if len(self._calls) >= self.max_calls:
-                retry_after = max(0.0, self.window_seconds - (now - self._calls[0]))
-                return False, retry_after, 0
-
-            self._calls.append(now)
-            remaining = max(0, self.max_calls - len(self._calls))
-            return True, 0.0, remaining
-
-    def remaining(self) -> int:
-        now = time.monotonic()
-        with self._lock:
-            while self._calls and now - self._calls[0] >= self.window_seconds:
-                self._calls.popleft()
-            return max(0, self.max_calls - len(self._calls))
-
-
-class GeminiRateLimitError(RuntimeError):
-    def __init__(self, retry_after: float, remaining: int) -> None:
-        super().__init__("Gemini rate limit reached")
-        self.retry_after = retry_after
-        self.remaining = remaining
-
-
-MAX_PRESENTATION_UPLOAD_BYTES = int(os.getenv("MAX_PRESENTATION_UPLOAD_BYTES", str(20 * 1024 * 1024)))
-MAX_PRESENTATION_UPLOAD_FILES = int(os.getenv("MAX_PRESENTATION_UPLOAD_FILES", "4"))
-MAX_VISION_MATERIAL_IMAGES = int(os.getenv("MAX_VISION_MATERIAL_IMAGES", "6"))
-MAX_VISION_PAGES_PER_FILE = int(os.getenv("MAX_VISION_PAGES_PER_FILE", "3"))
-GEMINI_RATE_WINDOW_SECONDS = int(os.getenv("GEMINI_RATE_WINDOW_SECONDS", "3600"))
-GEMINI_MAX_CALLS_PER_WINDOW = int(os.getenv("GEMINI_MAX_CALLS_PER_WINDOW", "6"))
-GEMINI_STATUS_CACHE_SECONDS = int(os.getenv("GEMINI_STATUS_CACHE_SECONDS", "600"))
-
-gemini_limiter = GeminiCallLimiter(GEMINI_MAX_CALLS_PER_WINDOW, GEMINI_RATE_WINDOW_SECONDS)
-ai_status_cache: dict[str, Any] = {"checked_at": 0.0, "payload": None}
-gemini_runtime_state: dict[str, Any] = {
-    "last_live": None,
-    "last_ok_at": None,
-    "last_error_at": None,
-    "last_error_code": None,
-    "last_error_message": None,
-    "last_call_kind": None,
-}
+from .config import (
+    GEMINI_STATUS_CACHE_SECONDS,
+    MAX_PRESENTATION_UPLOAD_BYTES,
+    MAX_PRESENTATION_UPLOAD_FILES,
+    MAX_VISION_MATERIAL_IMAGES,
+    MAX_VISION_PAGES_PER_FILE,
+    MAX_SCRIPT_FILE_BYTES,
+    TEXT_EXTENSIONS,
+    SUPPORTED_SCRIPT_EXTENSIONS,
+    get_gemini_model,
+)
+from .models import FinishSessionRequest, GeminiRateLimitError, ImportedScriptResponse, MetricSample, SessionState
+from .runtime_state import ai_status_cache, gemini_limiter, gemini_runtime_state, sessions
+from .services.gemini_service import call_gemini_api
+from .services.reference_service import build_reference_comparison, build_reference_video
+from .services.text_service import (
+    clamp,
+    count_syllables,
+    extract_script_text,
+    file_extension,
+    format_seconds,
+    normalize_imported_text,
+    recent_excerpt,
+    score_distance,
+    script_quality,
+    tokenize,
+    transcript_delta,
+)
 
 
 app = FastAPI(title="Presentation Practice API")
@@ -158,721 +85,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-sessions: dict[str, SessionState] = {}
-MAX_SCRIPT_FILE_BYTES = 10 * 1024 * 1024
-TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".text", ".csv", ".srt"}
-SUPPORTED_SCRIPT_EXTENSIONS = TEXT_EXTENSIONS | {".pdf", ".docx", ".pptx"}
-
-
-def load_env_file() -> None:
-    env_paths = [
-        Path(__file__).resolve().parents[2] / ".env",
-        Path(__file__).resolve().parents[1] / ".env",
-    ]
-    for env_path in env_paths:
-        if not env_path.exists():
-            continue
-        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            os.environ[key.strip()] = value.strip().strip('"').strip("'")
-
-
-load_env_file()
-
-
-def mark_gemini_success(kind: str) -> None:
-    now = datetime.now(timezone.utc).isoformat()
-    gemini_runtime_state["last_live"] = True
-    gemini_runtime_state["last_ok_at"] = now
-    gemini_runtime_state["last_call_kind"] = kind
-    gemini_runtime_state["last_error_code"] = None
-    gemini_runtime_state["last_error_message"] = None
-
-
-def mark_gemini_error(kind: str, message: str, status_code: int | None = None) -> None:
-    now = datetime.now(timezone.utc).isoformat()
-    gemini_runtime_state["last_live"] = False
-    gemini_runtime_state["last_error_at"] = now
-    gemini_runtime_state["last_error_code"] = status_code
-    gemini_runtime_state["last_error_message"] = message
-    gemini_runtime_state["last_call_kind"] = kind
-
-
-async def call_gemini_api(
-    *,
-    kind: str,
-    payload: dict[str, Any],
-    timeout_seconds: int,
-    count_against_limit: bool = True,
-    retry_on_unavailable: int = 0,
-) -> tuple[dict[str, Any], int]:
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-
-    remaining = gemini_limiter.remaining()
-    if count_against_limit:
-        allowed, retry_after, remaining = gemini_limiter.allow()
-        if not allowed:
-            mark_gemini_error(kind, f"rate_limited:{retry_after:.1f}", 429)
-            raise GeminiRateLimitError(retry_after, remaining)
-
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    attempt = 0
-    while True:
-        try:
-            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                response = await client.post(url, params={"key": api_key}, json=payload)
-                response.raise_for_status()
-                data = response.json()
-                mark_gemini_success(kind)
-                return data, remaining
-        except httpx.HTTPStatusError as exc:
-            detail = exc.response.text[:500]
-            if exc.response.status_code == 503 and attempt < retry_on_unavailable:
-                attempt += 1
-                await asyncio.sleep(1.2 * attempt)
-                continue
-            mark_gemini_error(kind, detail or f"HTTP {exc.response.status_code}", exc.response.status_code)
-            raise
-        except Exception as exc:
-            mark_gemini_error(kind, str(exc))
-            raise
-
-
-def extract_youtube_video_id(url: str) -> str | None:
-    patterns = [
-        r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/shorts/)([A-Za-z0-9_-]{11})",
-        r"youtube\.com/watch\?.*?[?&]v=([A-Za-z0-9_-]{11})",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    return None
-
-
-HARDCODED_REFERENCE_VIDEOS: dict[str, dict[str, Any]] = {
-    "NN4GVaBvroE": {
-        "video_id": "NN4GVaBvroE",
-        "embed_url": "https://www.youtube.com/embed/NN4GVaBvroE",
-        "title": "미친 자산 변동, 누가 벌고 누가 깨졌나",
-        "author_name": "슈카월드",
-        "thumbnail_url": "https://i.ytimg.com/vi/NN4GVaBvroE/hqdefault.jpg",
-        "reference_profile": {
-            "transcript_source": "youtube_caption_hardcoded",
-            "duration_seconds": 2580,
-            "word_count": 5633,
-            "syllables_per_second": 5.79,
-            "words_per_minute": 131.0,
-            "average_sentence_words": 8.4,
-            "tone": "짧은 의미 단위로 빠르게 전환하는 금융 해설형 말투",
-            "speaking_style": "시장 데이터를 던진 뒤 청중 감정과 사례를 이어 붙이는 스토리텔링형 해설",
-            "pause_timing_summary": "문장 길이는 짧지만 숫자, 종목명, 결론 직후에 의미 단위가 끊기며 리듬을 만듭니다.",
-            "emphasis_summary": "코스피 9천, 포모, 삼성전자, 하이닉스, 변동성처럼 숫자와 고유명사를 반복해 핵심 장면을 각인합니다.",
-            "top_keywords": ["코스피", "포모", "삼성전자", "하이닉스", "사이드카", "변동성", "시장", "투자자"],
-            "speech_rate_summary": "43분 자막 기준 초당 5.79음절, 분당 131단어로 빠르지만 청중이 따라올 수 있는 해설형 속도입니다.",
-            "word_choice_summary": "전문 지표를 일상어, 농담, 반복 구호와 섞어 복잡한 시장 상황을 쉽게 풀어냅니다.",
-        },
-        "benchmark_targets": {
-            "speech_rate": "초당 5.79음절, 분당 131단어를 기준으로 빠르지만 또렷한 설명 리듬을 비교합니다.",
-            "speaking_style": "데이터 제시 -> 감정 해석 -> 사례 확장의 순서로 청중 몰입을 만드는 해설 구조를 기준으로 봅니다.",
-            "pause_timing": "숫자와 결론을 말한 직후 짧게 끊어 핵심 정보가 남는지 비교합니다.",
-            "emphasis": "코스피, 포모, 삼성전자, 하이닉스, 변동성 같은 반복 키워드를 발표의 강조 축으로 삼습니다.",
-        },
-        "analysis_note": "제공된 한국어 자동 자막을 기존 분석 함수로 계산한 뒤, 발표 코칭용 기준 문구를 보강해 고정 적용했습니다.",
-    }
-}
-
-
-def build_hardcoded_reference_video(video_id: str, url: str) -> dict[str, Any] | None:
-    reference = HARDCODED_REFERENCE_VIDEOS.get(video_id)
-    if not reference:
-        return None
-    payload = json.loads(json.dumps(reference, ensure_ascii=False))
-    payload["url"] = url
-    return payload
-
-
-async def build_reference_video(url: str | None) -> dict[str, Any] | None:
-    if not url or not url.strip():
-        return None
-
-    clean_url = url.strip()
-    video_id = extract_youtube_video_id(clean_url)
-    if not video_id:
-        raise HTTPException(status_code=400, detail="올바른 YouTube 영상 주소를 입력해 주세요.")
-
-    hardcoded_reference = build_hardcoded_reference_video(video_id, clean_url)
-    if hardcoded_reference:
-        return hardcoded_reference
-
-    reference = {
-        "url": clean_url,
-        "video_id": video_id,
-        "embed_url": f"https://www.youtube.com/embed/{video_id}",
-        "title": f"YouTube 영상 {video_id}",
-        "author_name": "YouTube",
-        "thumbnail_url": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
-        "benchmark_targets": {
-            "speech_rate": "기준 영상처럼 또렷한 말하기 속도를 목표로 봅니다.",
-            "speaking_style": "기준 발표자의 화법처럼 차분하고 설명적인 흐름인지 봅니다.",
-            "pause_timing": "기준 영상처럼 중요한 의미 단위 뒤에 쉬는 타이밍이 있는지 봅니다.",
-            "emphasis": "기준 영상처럼 핵심어를 분명하게 강조하는지 봅니다.",
-        },
-        "analysis_note": "YouTube URL에서 오디오를 추출해 말하기 속도, 화법, 쉬는 타이밍, 강조 방식 기준을 만듭니다.",
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            response = await client.get(
-                "https://www.youtube.com/oembed",
-                params={"url": clean_url, "format": "json"},
-            )
-            response.raise_for_status()
-            data = response.json()
-            reference["title"] = data.get("title") or reference["title"]
-            reference["author_name"] = data.get("author_name") or reference["author_name"]
-            reference["thumbnail_url"] = data.get("thumbnail_url") or reference["thumbnail_url"]
-
-    except Exception:
-        reference["analysis_note"] = "YouTube 메타데이터를 가져오지 못했지만 오디오 분석을 계속 시도합니다."
-
-    missing_gemini_key = not os.getenv("GEMINI_API_KEY", "").strip()
-    audio_profile = await analyze_youtube_audio_reference(clean_url)
-    if audio_profile:
-        reference["reference_profile"] = audio_profile
-        reference["benchmark_targets"] = build_reference_benchmark_targets(audio_profile, "음성")
-        reference["analysis_note"] = "YouTube URL에서 오디오를 추출해 Gemini가 말하기 속도, 화법, 쉬는 타이밍, 강조 방식을 분석했습니다."
-        return reference
-
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            transcript_data = await fetch_youtube_transcript(client, video_id)
-        if not transcript_data:
-            transcript_data = await fetch_youtube_transcript_with_ytdlp(clean_url)
-        if transcript_data:
-            profile = analyze_reference_transcript(
-                transcript_data["text"],
-                transcript_data["duration_seconds"],
-            )
-            reference["reference_profile"] = profile
-            reference["benchmark_targets"] = build_reference_benchmark_targets(profile, "자막")
-            reference["analysis_note"] = "오디오 분석을 사용할 수 없어 YouTube 자막의 시간 정보와 텍스트로 기준을 만들었습니다."
-    except Exception:
-        if missing_gemini_key:
-            reference["analysis_note"] = "GEMINI_API_KEY가 없어 YouTube 오디오 음성 분석을 실행하지 못했고, 기본 기준으로 설정했습니다."
-        elif "계속 시도" in reference["analysis_note"]:
-            reference["analysis_note"] = "YouTube 오디오/자막을 가져오지 못해 영상 ID 기반 기본 기준으로 설정했습니다."
-
-    return reference
-
-
-def build_reference_benchmark_targets(profile: dict[str, Any], source_label: str) -> dict[str, str]:
-    pace = profile.get("syllables_per_second") or 0
-    top_keywords = profile.get("top_keywords") or []
-    keywords_text = ", ".join(top_keywords[:5]) if top_keywords else "핵심어"
-    return {
-        "speech_rate": f"기준 영상 {source_label} 기준 초당 {pace}음절의 말하기 속도를 비교 기준으로 봅니다.",
-        "speaking_style": f"기준 영상의 화법은 '{profile.get('speaking_style') or profile.get('tone', '설명형 화법')}'입니다.",
-        "pause_timing": profile.get("pause_timing_summary") or "중요한 의미 단위 뒤에 쉬는 타이밍이 있는지 봅니다.",
-        "emphasis": profile.get("emphasis_summary") or f"주요 단어({keywords_text})를 어떻게 강조하는지 봅니다.",
-    }
-
-
-async def analyze_youtube_audio_reference(url: str) -> dict[str, Any] | None:
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        return None
-
-    try:
-        audio_path, metadata = await asyncio.to_thread(download_youtube_audio, url)
-    except Exception:
-        return None
-
-    try:
-        if audio_path.stat().st_size > 18 * 1024 * 1024:
-            return None
-
-        mime_type = guess_audio_mime_type(audio_path)
-        audio_b64 = base64.b64encode(audio_path.read_bytes()).decode("ascii")
-        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
-        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        prompt = """
-You are a Korean presentation speech analyst.
-Analyze the attached YouTube audio as the reference speaker.
-Return strict JSON only.
-Focus only on speech rate, speaking style, pause timing, and emphasis style.
-
-Required JSON schema:
-{
-  "transcript_source": "youtube_audio",
-  "duration_seconds": number,
-  "word_count": number,
-  "syllables_per_second": number,
-  "words_per_minute": number,
-  "average_sentence_words": number,
-  "tone": "Korean short phrase",
-  "speaking_style": "Korean short phrase",
-  "pause_timing_summary": "Korean short sentence",
-  "emphasis_summary": "Korean short sentence",
-  "top_keywords": ["Korean keyword"],
-  "speech_rate_summary": "Korean short sentence",
-  "word_choice_summary": "Korean short sentence"
-}
-"""
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt},
-                        {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
-                    ]
-                }
-            ],
-            "generationConfig": {"responseMimeType": "application/json"},
-        }
-        data, _remaining = await call_gemini_api(
-            kind="reference_audio",
-            payload=payload,
-            timeout_seconds=60,
-            count_against_limit=True,
-            retry_on_unavailable=1,
-        )
-        raw = data["candidates"][0]["content"]["parts"][0]["text"]
-
-        profile = json.loads(raw)
-        profile["transcript_source"] = "youtube_audio"
-        profile["duration_seconds"] = profile.get("duration_seconds") or metadata.get("duration") or 0
-        profile["audio_bytes"] = audio_path.stat().st_size
-        return normalize_reference_profile(profile)
-    except Exception:
-        return None
-    finally:
-        try:
-            audio_path.unlink(missing_ok=True)
-            audio_path.parent.rmdir()
-        except Exception:
-            pass
-
-
-def download_youtube_audio(url: str) -> tuple[Path, dict[str, Any]]:
-    try:
-        import yt_dlp
-    except ImportError as exc:
-        raise RuntimeError("yt-dlp is not installed") from exc
-
-    tmp_dir = Path(tempfile.mkdtemp(prefix="reference-audio-"))
-    output_template = str(tmp_dir / "audio.%(ext)s")
-    options = {
-        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-        "outtmpl": output_template,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "socket_timeout": 20,
-    }
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=True)
-
-    files = [path for path in tmp_dir.iterdir() if path.is_file()]
-    if not files:
-        raise RuntimeError("audio download failed")
-    return files[0], info or {}
-
-
-def guess_audio_mime_type(path: Path) -> str:
-    if path.suffix.lower() == ".m4a":
-        return "audio/mp4"
-    if path.suffix.lower() == ".webm":
-        return "audio/webm"
-    if path.suffix.lower() == ".mp3":
-        return "audio/mpeg"
-    return mimetypes.guess_type(path.name)[0] or "audio/mpeg"
-
-
-def normalize_reference_profile(profile: dict[str, Any]) -> dict[str, Any]:
-    keywords = profile.get("top_keywords") or []
-    if not isinstance(keywords, list):
-        keywords = []
-    return {
-        "transcript_source": profile.get("transcript_source", "youtube_audio"),
-        "duration_seconds": round(float(profile.get("duration_seconds") or 0), 1),
-        "word_count": int(float(profile.get("word_count") or 0)),
-        "syllables_per_second": round(float(profile.get("syllables_per_second") or 0), 2),
-        "words_per_minute": round(float(profile.get("words_per_minute") or 0), 1),
-        "average_sentence_words": round(float(profile.get("average_sentence_words") or 0), 1),
-        "tone": str(profile.get("tone") or "설명형 말투"),
-        "speaking_style": str(profile.get("speaking_style") or profile.get("tone") or "설명형 화법"),
-        "pause_timing_summary": str(profile.get("pause_timing_summary") or ""),
-        "emphasis_summary": str(profile.get("emphasis_summary") or ""),
-        "top_keywords": [str(keyword) for keyword in keywords[:8]],
-        "speech_rate_summary": str(profile.get("speech_rate_summary") or ""),
-        "word_choice_summary": str(profile.get("word_choice_summary") or ""),
-        "audio_bytes": int(profile.get("audio_bytes") or 0),
-    }
-
-
-async def fetch_youtube_transcript(client: httpx.AsyncClient, video_id: str) -> dict[str, Any] | None:
-    watch_response = await client.get(
-        "https://www.youtube.com/watch",
-        params={"v": video_id, "hl": "ko"},
-    )
-    watch_response.raise_for_status()
-    html = watch_response.text
-    match = re.search(r'"captionTracks":(\[.*?\])', html)
-    if not match:
-        return None
-
-    tracks = json.loads(match.group(1))
-    if not tracks:
-        return None
-
-    selected = next((track for track in tracks if track.get("languageCode") == "ko"), None)
-    selected = selected or next((track for track in tracks if track.get("kind") != "asr"), None)
-    selected = selected or tracks[0]
-    base_url = selected.get("baseUrl")
-    if not base_url:
-        return None
-
-    caption_url = unescape(base_url)
-    separator = "&" if "?" in caption_url else "?"
-    json_response = await client.get(f"{caption_url}{separator}fmt=json3")
-    json_response.raise_for_status()
-
-    try:
-        data = json_response.json()
-        lines = []
-        duration_ms = 0
-        for event in data.get("events", []):
-            parts = [segment.get("utf8", "") for segment in event.get("segs", [])]
-            text = "".join(parts).strip()
-            if text:
-                lines.append(text)
-            start_ms = int(event.get("tStartMs", 0) or 0)
-            duration_ms = max(duration_ms, start_ms + int(event.get("dDurationMs", 0) or 0))
-        transcript = " ".join(lines)
-        if transcript:
-            return {"text": transcript, "duration_seconds": max(1, duration_ms / 1000)}
-    except ValueError:
-        pass
-
-    xml_response = await client.get(caption_url)
-    xml_response.raise_for_status()
-    root = ET.fromstring(xml_response.text)
-    lines = []
-    duration_seconds = 0.0
-    for node in root.findall(".//text"):
-        text = unescape("".join(node.itertext())).strip()
-        if text:
-            lines.append(text)
-        start = float(node.attrib.get("start", 0) or 0)
-        duration = float(node.attrib.get("dur", 0) or 0)
-        duration_seconds = max(duration_seconds, start + duration)
-    transcript = " ".join(lines)
-    if not transcript:
-        return None
-    return {"text": transcript, "duration_seconds": max(1, duration_seconds)}
-
-
-async def fetch_youtube_transcript_with_ytdlp(url: str) -> dict[str, Any] | None:
-    try:
-        caption_url, duration_seconds = await asyncio.to_thread(get_ytdlp_caption_url, url)
-        if not caption_url:
-            return None
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(caption_url)
-            response.raise_for_status()
-        text = response.text
-        if caption_url.endswith("json3") or '"events"' in text[:200]:
-            return parse_json3_transcript(text, duration_seconds)
-        return parse_vtt_transcript(text, duration_seconds)
-    except Exception:
-        return None
-
-
-def get_ytdlp_caption_url(url: str) -> tuple[str | None, float]:
-    try:
-        import yt_dlp
-    except ImportError as exc:
-        raise RuntimeError("yt-dlp is not installed") from exc
-
-    options = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "socket_timeout": 20,
-    }
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=False)
-
-    captions = info.get("subtitles") or {}
-    automatic_captions = info.get("automatic_captions") or {}
-    tracks = captions or automatic_captions
-    if not tracks:
-        return None, float(info.get("duration") or 0)
-
-    selected_tracks = (
-        tracks.get("ko")
-        or tracks.get("ko-KR")
-        or tracks.get("en")
-        or tracks.get("en-US")
-        or next(iter(tracks.values()), None)
-    )
-    if not selected_tracks:
-        return None, float(info.get("duration") or 0)
-
-    preferred = next((track for track in selected_tracks if track.get("ext") == "json3"), None)
-    preferred = preferred or next((track for track in selected_tracks if track.get("ext") == "vtt"), None)
-    preferred = preferred or selected_tracks[0]
-    return preferred.get("url"), float(info.get("duration") or 0)
-
-
-def parse_json3_transcript(raw_text: str, fallback_duration_seconds: float = 0) -> dict[str, Any] | None:
-    data = json.loads(raw_text)
-    lines = []
-    duration_ms = 0
-    for event in data.get("events", []):
-        parts = [segment.get("utf8", "") for segment in event.get("segs", [])]
-        text = "".join(parts).strip()
-        if text:
-            lines.append(text)
-        start_ms = int(event.get("tStartMs", 0) or 0)
-        duration_ms = max(duration_ms, start_ms + int(event.get("dDurationMs", 0) or 0))
-    transcript = " ".join(lines)
-    if not transcript:
-        return None
-    duration_seconds = max(1, duration_ms / 1000 if duration_ms else fallback_duration_seconds)
-    return {"text": transcript, "duration_seconds": duration_seconds}
-
-
-def parse_vtt_transcript(raw_text: str, fallback_duration_seconds: float = 0) -> dict[str, Any] | None:
-    lines = []
-    last_time = fallback_duration_seconds
-    time_pattern = re.compile(r"(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})")
-    for raw_line in raw_text.splitlines():
-        line = raw_line.strip()
-        if not line or line == "WEBVTT" or line.startswith(("Kind:", "Language:", "NOTE", "STYLE")):
-            continue
-        if "-->" in line:
-            matches = time_pattern.findall(line)
-            if matches:
-                hours, minutes, seconds, millis = matches[-1]
-                last_time = int(hours or 0) * 3600 + int(minutes) * 60 + int(seconds) + int(millis) / 1000
-            continue
-        if line.isdigit() or line.startswith("<"):
-            continue
-        clean_line = re.sub(r"<[^>]+>", "", line)
-        clean_line = re.sub(r"\s+", " ", clean_line).strip()
-        if clean_line:
-            lines.append(unescape(clean_line))
-    transcript = " ".join(lines)
-    if not transcript:
-        return None
-    return {"text": transcript, "duration_seconds": max(1, last_time)}
-
-
-def analyze_reference_transcript(transcript: str, duration_seconds: float) -> dict[str, Any]:
-    words = tokenize(transcript)
-    syllables = count_syllables(transcript)
-    sentence_count = max(1, len(re.findall(r"[.!?。！？]|다\.|요\.", transcript)))
-    keyword_stopwords = {
-        "그리고", "그래서", "하지만", "저는", "제가", "우리", "여러분", "이것", "그것",
-        "것은", "있는", "합니다", "있습니다", "합니다", "the", "and", "that", "this",
-    }
-    counts: dict[str, int] = {}
-    for word in words:
-        if len(word) < 2 or word in keyword_stopwords:
-            continue
-        counts[word] = counts.get(word, 0) + 1
-    top_keywords = sorted(counts, key=lambda word: (-counts[word], word))[:8]
-    average_sentence_words = len(words) / sentence_count if words else 0
-
-    if average_sentence_words > 24:
-        tone = "긴 문장 중심의 설명형 말투"
-    elif average_sentence_words < 8:
-        tone = "짧고 빠르게 끊는 말투"
-    else:
-        tone = "짧은 의미 단위로 설명하는 말투"
-
-    return {
-        "transcript_source": "youtube_caption",
-        "duration_seconds": round(duration_seconds, 1),
-        "word_count": len(words),
-        "syllables_per_second": round(syllables / duration_seconds, 2) if duration_seconds else 0,
-        "words_per_minute": round(len(words) / duration_seconds * 60, 1) if duration_seconds else 0,
-        "average_sentence_words": round(average_sentence_words, 1),
-        "tone": tone,
-        "speaking_style": tone,
-        "pause_timing_summary": "자막 기준 분석이라 실제 침묵 길이는 제한적으로만 판단합니다. 문장 경계 뒤 쉬는 흐름을 기준으로 봅니다.",
-        "emphasis_summary": f"{', '.join(top_keywords[:5]) if top_keywords else '핵심어'} 같은 반복 키워드를 강조 기준으로 봅니다.",
-        "top_keywords": top_keywords,
-    }
-
-
-def tokenize(text: str) -> list[str]:
-    return re.findall(r"[가-힣A-Za-z0-9']+", text.lower())
-
-
-def count_syllables(text: str) -> int:
-    hangul = len(re.findall(r"[가-힣]", text))
-    latin_words = re.findall(r"[A-Za-z0-9']+", text)
-    return hangul + sum(max(1, round(len(word) / 3)) for word in latin_words)
-
-
-def clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
-
-
-def score_distance(value: float, target: float, tolerance: float, floor: float = 35) -> float:
-    if value <= 0:
-        return floor
-    return clamp(100 - abs(value - target) / tolerance * 35, floor, 100)
-
-
-def format_seconds(seconds: float) -> str:
-    whole = max(0, int(seconds))
-    minutes = whole // 60
-    rest = whole % 60
-    return f"{minutes:02d}:{rest:02d}"
-
-
-def transcript_delta(previous: str, current: str) -> str:
-    previous = previous.strip()
-    current = current.strip()
-    if not current:
-        return ""
-    if previous and current.startswith(previous):
-        return current[len(previous) :].strip()
-    previous_tokens = tokenize(previous)
-    current_tokens = tokenize(current)
-    if not previous_tokens:
-        return current
-    shared = 0
-    for index, token in enumerate(current_tokens):
-        if index < len(previous_tokens) and previous_tokens[index] == token:
-            shared += 1
-        else:
-            break
-    if shared >= len(previous_tokens) - 2:
-        return " ".join(current_tokens[shared:]).strip()
-    return current[-180:].strip()
-
-
-def recent_excerpt(text: str, limit: int = 140) -> str:
-    compact = re.sub(r"\s+", " ", text).strip()
-    if len(compact) <= limit:
-        return compact
-    return f"...{compact[-limit:]}"
-
-
-def normalize_imported_text(text: str) -> str:
-    text = text.replace("\x00", " ")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def file_extension(filename: str) -> str:
-    _, extension = os.path.splitext(filename.lower())
-    return extension
-
-
-def extract_text_from_pdf(content: bytes) -> str:
-    reader = PdfReader(BytesIO(content))
-    pages = []
-    for index, page in enumerate(reader.pages, start=1):
-        page_text = page.extract_text() or ""
-        if page_text.strip():
-            pages.append(f"[{index}쪽]\n{page_text.strip()}")
-    return "\n\n".join(pages)
-
-
-def extract_text_from_docx(content: bytes) -> str:
-    document = Document(BytesIO(content))
-    parts = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
-    for table in document.tables:
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-            if cells:
-                parts.append(" | ".join(cells))
-    return "\n".join(parts)
-
-
-def extract_text_from_pptx(content: bytes) -> str:
-    deck = Presentation(BytesIO(content))
-    slides = []
-    for index, slide in enumerate(deck.slides, start=1):
-        slide_text = []
-        for shape in slide.shapes:
-            if hasattr(shape, "text") and shape.text.strip():
-                slide_text.append(shape.text.strip())
-        if slide_text:
-            slides.append(f"[슬라이드 {index}]\n" + "\n".join(slide_text))
-    return "\n\n".join(slides)
-
-
-def extract_script_text(filename: str, content: bytes) -> tuple[str, str]:
-    extension = file_extension(filename)
-    if extension not in SUPPORTED_SCRIPT_EXTENSIONS:
-        supported = ", ".join(sorted(SUPPORTED_SCRIPT_EXTENSIONS))
-        raise HTTPException(status_code=400, detail=f"지원하지 않는 파일 형식입니다. 지원 형식: {supported}")
-
-    try:
-        if extension in TEXT_EXTENSIONS:
-            try:
-                return content.decode("utf-8-sig"), "text"
-            except UnicodeDecodeError:
-                return content.decode("cp949", errors="ignore"), "text"
-        if extension == ".pdf":
-            return extract_text_from_pdf(content), "pdf"
-        if extension == ".docx":
-            return extract_text_from_docx(content), "docx"
-        if extension == ".pptx":
-            return extract_text_from_pptx(content), "pptx"
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="파일에서 대본 텍스트를 읽지 못했습니다.") from exc
-
-    raise HTTPException(status_code=400, detail="파일을 읽지 못했습니다.")
-
-
-def script_quality(script: str) -> dict[str, Any]:
-    words = tokenize(script)
-    sentence_count = max(1, len(re.findall(r"[.!?。！？]|다\.|요\.", script)))
-    avg_sentence_words = len(words) / sentence_count if words else 0
-    unique_ratio = len(set(words)) / len(words) if words else 0
-    has_opening = any(token in script for token in ["안녕하세요", "오늘", "소개", "주제"])
-    has_closing = any(token in script for token in ["감사합니다", "정리", "결론", "마치"])
-
-    score = 55
-    score += 15 if 8 <= avg_sentence_words <= 22 else 4
-    score += 10 if unique_ratio > 0.45 else 4
-    score += 8 if has_opening else 0
-    score += 8 if has_closing else 0
-    score += 4 if len(words) >= 80 else 0
-
-    suggestions = []
-    if avg_sentence_words > 24:
-        suggestions.append("긴 문장을 둘로 나누면 청중이 핵심을 따라가기 쉬워집니다.")
-    if not has_opening:
-        suggestions.append("처음 15초 안에 발표 주제와 듣는 이유를 분명히 말해보세요.")
-    if not has_closing:
-        suggestions.append("마지막에는 핵심 요약과 감사 인사를 짧게 넣어 마무리감을 주세요.")
-    if len(words) < 80:
-        suggestions.append("대본이 짧아 리허설 피드백이 제한될 수 있어요. 예시나 전환 문장을 조금 더 넣어보세요.")
-
-    return {
-        "score": round(clamp(score, 0, 100)),
-        "word_count": len(words),
-        "average_sentence_words": round(avg_sentence_words, 1),
-        "suggestions": suggestions[:4],
-    }
-
 
 def build_issue_log(session: SessionState, transcript: str) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
@@ -1069,61 +281,6 @@ def presentation_criteria() -> dict[str, Any]:
         },
         "rubric_items": ["말하기 속도", "화법", "쉬는 타이밍", "강조 방식"],
     }
-
-
-def extract_youtube_video_id(url: str) -> str | None:
-    patterns = [
-        r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/shorts/)([A-Za-z0-9_-]{11})",
-        r"youtube\.com/watch\?.*?[?&]v=([A-Za-z0-9_-]{11})",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    return None
-
-
-async def build_reference_video(url: str | None) -> dict[str, Any] | None:
-    if not url or not url.strip():
-        return None
-
-    clean_url = url.strip()
-    video_id = extract_youtube_video_id(clean_url)
-    if not video_id:
-        raise HTTPException(status_code=400, detail="올바른 YouTube 영상 주소를 입력해 주세요.")
-
-    reference = {
-        "url": clean_url,
-        "video_id": video_id,
-        "embed_url": f"https://www.youtube.com/embed/{video_id}",
-        "title": f"YouTube 영상 {video_id}",
-        "author_name": "YouTube",
-        "thumbnail_url": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
-        "benchmark_targets": {
-            "speech_rate": "기준 영상처럼 또렷한 말하기 속도를 목표로 봅니다.",
-            "speaking_style": "기준 발표자의 화법처럼 차분하고 설명적인 흐름인지 봅니다.",
-            "pause_timing": "기준 영상처럼 중요한 의미 단위 뒤에 쉬는 타이밍이 있는지 봅니다.",
-            "emphasis": "기준 영상처럼 핵심어를 분명하게 강조하는지 봅니다.",
-        },
-        "analysis_note": "YouTube URL을 기준 발표로 등록했습니다. 대본과 발표 흐름을 비교할 때 참고합니다.",
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            response = await client.get(
-                "https://www.youtube.com/oembed",
-                params={"url": clean_url, "format": "json"},
-            )
-            response.raise_for_status()
-            data = response.json()
-            reference["title"] = data.get("title") or reference["title"]
-            reference["author_name"] = data.get("author_name") or reference["author_name"]
-            reference["thumbnail_url"] = data.get("thumbnail_url") or reference["thumbnail_url"]
-    except Exception:
-        reference["analysis_note"] = "YouTube 메타데이터를 가져오지 못했지만 기준 영상 등록은 유지됩니다."
-
-    return reference
-
 
 def sample_indices(total: int, limit: int) -> list[int]:
     if total <= 0 or limit <= 0:
@@ -1792,104 +949,6 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
     return report
 
 
-def build_reference_comparison(report: dict[str, Any], reference_video: dict[str, Any]) -> dict[str, Any]:
-    pace = report["pace"]["syllables_per_second"]
-    pause_ratio = report["silence"]["pause_ratio_percent"]
-    script = report.get("script", {})
-    average_sentence_words = script.get("average_sentence_words", 0)
-    profile = reference_video.get("reference_profile") or {}
-    reference_pace = profile.get("syllables_per_second")
-    reference_sentence_words = profile.get("average_sentence_words")
-    reference_keywords = profile.get("top_keywords") or []
-    notes = []
-
-    if reference_pace:
-        pace_gap = pace - reference_pace
-        if pace_gap < -0.7:
-            notes.append(f"말하기 속도: 기준 영상은 초당 {reference_pace}음절 정도입니다. 지금은 조금 느려서 문장 사이 이동을 더 자연스럽게 이어보세요.")
-        elif pace_gap > 0.7:
-            notes.append(f"말하기 속도: 기준 영상은 초당 {reference_pace}음절 정도입니다. 지금은 더 빨라서 핵심어 앞뒤에서 속도를 낮춰보세요.")
-        else:
-            notes.append("말하기 속도: 기준 영상의 발화 속도와 꽤 가까운 편입니다.")
-    elif pace < 5.6:
-        notes.append("말하기 속도: 기준 범위에 비해 느린 편입니다. 다음 문장으로 넘어가는 속도를 조금 높여보세요.")
-    elif pace > 6.3:
-        notes.append("말하기 속도: 기준 범위에 비해 빠른 편입니다. 핵심어 앞뒤에서 속도를 낮춰보세요.")
-    else:
-        notes.append("말하기 속도: 정보 전달 발표로 보기 좋은 범위에 들어왔습니다.")
-
-    if reference_sentence_words:
-        sentence_gap = average_sentence_words - reference_sentence_words
-        if sentence_gap > 6:
-            notes.append(f"화법: 기준 영상은 문장당 평균 {reference_sentence_words}단어 흐름입니다. 지금 대본은 더 길어서 의미 단위를 나눠 말하면 비슷해집니다.")
-        elif sentence_gap < -6:
-            notes.append(f"화법: 기준 영상은 문장당 평균 {reference_sentence_words}단어 흐름입니다. 지금은 너무 짧게 끊겨 설명이 단편적으로 들릴 수 있습니다.")
-        else:
-            notes.append("화법: 문장 길이와 설명 흐름이 기준 영상과 비슷한 편입니다.")
-    elif average_sentence_words > 24:
-        notes.append("화법: 한 문장이 길어 설명이 무겁게 들릴 수 있습니다. 짧은 의미 단위로 나눠 말해보세요.")
-    else:
-        notes.append("화법: 문장 길이가 비교적 안정적이라 차분한 설명형 화법으로 다듬기 좋습니다.")
-
-    if pause_ratio > 25:
-        notes.append("쉬는 타이밍: 전체 침묵 비율이 높은 편입니다. 기준 영상처럼 의미 단위 뒤에 짧게만 쉬어보세요.")
-    elif pause_ratio < 8:
-        notes.append("쉬는 타이밍: 쉬는 구간이 적어 정보가 붙어서 들릴 수 있습니다. 핵심 문장 뒤에 짧은 여백을 주세요.")
-    else:
-        notes.append("쉬는 타이밍: 발표 흐름 안에 적당한 여백이 있어 기준 영상과 비교하기 좋은 상태입니다.")
-
-    if reference_keywords:
-        notes.append(f"강조 방식: 기준 영상은 {', '.join(reference_keywords[:5])} 같은 핵심어가 두드러집니다. 내 발표에서도 강조할 단어를 3개 정도 고정해보세요.")
-    else:
-        notes.append("강조 방식: 핵심어 앞뒤에서 속도를 조금 늦추고 반복 표현을 사용하면 메시지가 더 선명해집니다.")
-
-    return {
-        "title": reference_video.get("title", "기준 발표 영상"),
-        "author_name": reference_video.get("author_name", "YouTube"),
-        "targets": ["말하기 속도", "화법", "쉬는 타이밍", "강조 방식"],
-        "notes": notes[:4],
-        "reference_profile": profile or None,
-        "analysis_note": reference_video.get("analysis_note"),
-    }
-
-
-def build_reference_comparison(report: dict[str, Any], reference_video: dict[str, Any]) -> dict[str, Any]:
-    pace = report["pace"]["syllables_per_second"]
-    pause_ratio = report["silence"]["pause_ratio_percent"]
-    script = report.get("script", {})
-    average_sentence_words = script.get("average_sentence_words", 0)
-    benchmark_targets = reference_video.get("benchmark_targets") or {}
-    notes = []
-
-    if pace < 5.6:
-        notes.append("말하기 속도가 조금 느립니다. 기준 영상처럼 문장 사이 이동을 더 부드럽게 이어 보세요.")
-    elif pace > 6.3:
-        notes.append("말하기 속도가 조금 빠릅니다. 핵심어 앞뒤에서 속도를 낮춰 보세요.")
-    else:
-        notes.append("말하기 속도는 기준 영상과 비교하기 좋은 범위입니다.")
-
-    if average_sentence_words > 24:
-        notes.append("문장이 길어 설명이 무거워질 수 있습니다. 의미 단위로 나눠 말해 보세요.")
-    else:
-        notes.append("문장 길이는 비교적 안정적이라 기준 영상의 설명 흐름과 비교하기 좋습니다.")
-
-    if pause_ratio > 25:
-        notes.append("쉬는 구간이 많은 편입니다. 의미 단위 뒤에만 짧게 쉬어 보세요.")
-    elif pause_ratio < 8:
-        notes.append("쉬는 구간이 적습니다. 핵심 문장 뒤에 짧은 여백을 주세요.")
-    else:
-        notes.append("쉬는 타이밍이 비교적 안정적입니다.")
-
-    return {
-        "title": reference_video.get("title", "기준 발표 영상"),
-        "author_name": reference_video.get("author_name", "YouTube"),
-        "targets": list(benchmark_targets.keys()) or ["말하기 속도", "화법", "쉬는 타이밍", "강조 방식"],
-        "notes": notes[:4],
-        "analysis_note": reference_video.get("analysis_note"),
-        "reference_profile": reference_video.get("reference_profile"),
-    }
-
-
 async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str, Any]) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -1909,7 +968,7 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
         }
         return fallback_report
 
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    model = get_gemini_model()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     prompt = {
         "instruction": "You are a Korean presentation coach. Return strict JSON only and preserve the provided criteria_basis.",
@@ -2032,7 +1091,7 @@ async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[
 @app.get("/api/ai/status")
 async def ai_status(probe: bool = False) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    model = get_gemini_model()
     if not api_key:
         return {
             "configured": False,
@@ -2163,6 +1222,58 @@ async def preview_youtube_reference(payload: dict[str, str]) -> dict[str, Any]:
     return reference
 
 
+async def collect_uploaded_materials(
+    script: str,
+    materials: list[UploadFile] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    uploaded_blobs: list[dict[str, Any]] = []
+    uploaded_materials: list[dict[str, Any]] = []
+    for file in (materials or [])[:MAX_PRESENTATION_UPLOAD_FILES]:
+        data = await file.read()
+        filename = file.filename or "material"
+        uploaded_blobs.append(
+            {
+                "filename": filename,
+                "content_type": file.content_type,
+                "data": data,
+            }
+        )
+        uploaded_materials.append(analyze_material_file(script, filename, file.content_type, data))
+    return uploaded_blobs, uploaded_materials
+
+
+@app.post("/api/preflight")
+async def preflight_session(
+    script: str = Form(...),
+    reference_video_url: str | None = Form(default=None),
+    materials: list[UploadFile] | None = File(default=None),
+) -> dict[str, Any]:
+    normalized_script = script.strip()
+    uploaded_blobs, uploaded_materials = await collect_uploaded_materials(normalized_script, materials)
+    local_script_feedback = script_quality(normalized_script)
+    preflight_feedback = await analyze_preflight_with_gemini(normalized_script, uploaded_materials, uploaded_blobs)
+    uploaded_materials = merge_vision_material_feedback(
+        uploaded_materials,
+        (preflight_feedback or {}).get("presentation_material"),
+    )
+    material_feedback = merge_material_feedback_summary(
+        build_material_feedback(normalized_script, uploaded_materials),
+        (preflight_feedback or {}).get("presentation_material"),
+    )
+    reference_video = await build_reference_video(reference_video_url)
+    return {
+        "script_feedback": merge_gemini_script_feedback(
+            local_script_feedback,
+            (preflight_feedback or {}).get("script_feedback"),
+        ),
+        "criteria_basis": presentation_criteria(),
+        "presentation_material": material_feedback,
+        "reference_video": reference_video,
+        "gemini_ready": bool(os.getenv("GEMINI_API_KEY", "").strip()),
+        "upload_count": len(uploaded_materials),
+    }
+
+
 @app.post("/api/session/start")
 async def start_session(
     script: str = Form(...),
@@ -2170,46 +1281,21 @@ async def start_session(
     materials: list[UploadFile] | None = File(default=None),
 ) -> dict[str, Any]:
     session_id = str(uuid4())
-    uploaded_blobs: list[dict[str, Any]] = []
-    uploaded_materials: list[dict[str, Any]] = []
-    for file in (materials or [])[:MAX_PRESENTATION_UPLOAD_FILES]:
-        data = await file.read()
-        uploaded_blobs.append(
-            {
-                "filename": file.filename or "material",
-                "content_type": file.content_type,
-                "data": data,
-            }
-        )
-        uploaded_materials.append(analyze_material_file(script, file.filename or "material", file.content_type, data))
-    local_script_feedback = script_quality(script.strip())
-    preflight_feedback = await analyze_preflight_with_gemini(script.strip(), uploaded_materials, uploaded_blobs)
-    uploaded_materials = merge_vision_material_feedback(
-        uploaded_materials,
-        (preflight_feedback or {}).get("presentation_material"),
-    )
+    normalized_script = script.strip()
+    _uploaded_blobs, uploaded_materials = await collect_uploaded_materials(normalized_script, materials)
     reference_video = await build_reference_video(reference_video_url)
 
     session = SessionState(
         id=session_id,
-        script=script.strip(),
+        script=normalized_script,
         created_at=datetime.now(timezone.utc).isoformat(),
         materials=uploaded_materials,
         reference_video=reference_video,
     )
     sessions[session_id] = session
-    material_feedback = merge_material_feedback_summary(
-        build_material_feedback(session.script, session.materials),
-        (preflight_feedback or {}).get("presentation_material"),
-    )
     return {
         "session_id": session_id,
-        "script_feedback": merge_gemini_script_feedback(
-            local_script_feedback,
-            (preflight_feedback or {}).get("script_feedback"),
-        ),
         "criteria_basis": presentation_criteria(),
-        "presentation_material": material_feedback,
         "reference_video": reference_video,
         "gemini_ready": bool(os.getenv("GEMINI_API_KEY", "").strip()),
         "upload_count": len(uploaded_materials),

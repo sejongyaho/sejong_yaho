@@ -105,3 +105,10 @@ frontend/
 ## 참고
 
 기존 `backend/` FastAPI 코드와 `frontend/` 디자인은 보존되어 있습니다. 이번 MVP 분석 기능은 우선 `server/` Node.js Express API로 추가되어 있으며, 프론트 통합은 기존 디자인을 해치지 않는 방식으로 별도 작업하는 것이 안전합니다.
+## Refactoring Promise
+
+- We will continue adding new features in a modular way instead of growing one large file again.
+- Backend changes will prefer separated modules such as config, models, runtime state, and feature-specific services.
+- Frontend changes will prefer separated components, data files, and utility modules so collaboration is easier.
+- Audience personas, YouTube reference alternatives, and future report improvements should be added by extending dedicated modules first.
+- When refactoring is needed again, we will prefer extracting a focused module before adding more logic into `main.py` or `App.jsx`.

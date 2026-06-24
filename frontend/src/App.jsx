@@ -9,6 +9,7 @@ import {
   MessageCircle,
   Mic,
   Play,
+  Search,
   RefreshCcw,
   Send,
   Square,
@@ -173,6 +174,9 @@ function App() {
   const [report, setReport] = useState(null);
   const [scriptFeedback, setScriptFeedback] = useState(null);
   const [aiStatus, setAiStatus] = useState(null);
+  const [referenceVideoUrl, setReferenceVideoUrl] = useState("");
+  const [referenceVideo, setReferenceVideo] = useState(null);
+  const [isLoadingReference, setIsLoadingReference] = useState(false);
   const [recognitionStatus, setRecognitionStatus] = useState("대기 중");
   const [error, setError] = useState("");
 
@@ -302,6 +306,31 @@ function App() {
         model: "unknown",
         message: err.message || "AI 상태 확인 실패",
       });
+    }
+  };
+
+  const applyReferenceVideo = async () => {
+    const url = referenceVideoUrl.trim();
+    if (!url) {
+      setReferenceVideo(null);
+      return;
+    }
+
+    setIsLoadingReference(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reference/youtube`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      if (!response.ok) throw new Error("YouTube 기준 영상을 확인하지 못했습니다.");
+      setReferenceVideo(await response.json());
+    } catch (err) {
+      setReferenceVideo(null);
+      setError(err.message || "기준 영상을 불러오지 못했습니다.");
+    } finally {
+      setIsLoadingReference(false);
     }
   };
 
@@ -572,7 +601,7 @@ function App() {
       const response = await fetch(`${API_BASE_URL}/api/session/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ script }),
+        body: JSON.stringify({ script, reference_video_url: referenceVideoUrl.trim() || null }),
       });
       if (!response.ok) throw new Error("세션을 시작하지 못했습니다.");
       const data = await response.json();
@@ -727,7 +756,12 @@ function App() {
             isImporting={isImporting}
             isStarting={isStarting}
             importScriptFile={importScriptFile}
+            applyReferenceVideo={applyReferenceVideo}
+            isLoadingReference={isLoadingReference}
+            referenceVideo={referenceVideo}
+            referenceVideoUrl={referenceVideoUrl}
             script={script}
+            setReferenceVideoUrl={setReferenceVideoUrl}
             setScript={setScript}
             startPresentation={startPresentation}
           />
@@ -772,7 +806,21 @@ function App() {
   );
 }
 
-function SetupPage({ aiStatus, error, importScriptFile, isImporting, isStarting, script, setScript, startPresentation }) {
+function SetupPage({
+  aiStatus,
+  error,
+  importScriptFile,
+  isImporting,
+  isStarting,
+  applyReferenceVideo,
+  isLoadingReference,
+  referenceVideo,
+  referenceVideoUrl,
+  script,
+  setReferenceVideoUrl,
+  setScript,
+  startPresentation,
+}) {
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef(null);
   const scriptWords = tokenCount(script);
@@ -784,7 +832,6 @@ function SetupPage({ aiStatus, error, importScriptFile, isImporting, isStarting,
     setDragging(false);
     importScriptFile(event.dataTransfer.files?.[0]);
   };
-
   return (
     <>
       <nav className="brand-nav" aria-label="서비스">
@@ -915,9 +962,76 @@ function SetupPage({ aiStatus, error, importScriptFile, isImporting, isStarting,
               <span key={label}><Icon size={15} />{label}</span>
             ))}
           </div>
+
+          <div className="reference-panel">
+            <h2>영상 분석 기준</h2>
+            <div className="reference-input-row">
+              <input
+                value={referenceVideoUrl}
+                onChange={(event) => setReferenceVideoUrl(event.target.value)}
+                placeholder="YouTube 발표 영상 URL"
+              />
+              <button className="icon-button" onClick={applyReferenceVideo} disabled={isLoadingReference} title="영상 분석">
+                {isLoadingReference ? <Loader2 className="spin" size={18} /> : <Search size={18} />}
+              </button>
+            </div>
+            {referenceVideo ? (
+              <>
+                <div className="reference-card">
+                  <img src={referenceVideo.thumbnail_url} alt="" />
+                  <div>
+                    <strong>{referenceVideo.title || `YouTube 영상 ${referenceVideo.video_id}`}</strong>
+                    <span>{referenceVideo.author_name}</span>
+                    <span>
+                      {referenceVideo.reference_profile
+                        ? `음성 분석됨 · 초당 ${referenceVideo.reference_profile.syllables_per_second}음절`
+                        : "음성 분석이 안 되면 기본 기준 적용"}
+                    </span>
+                  </div>
+                </div>
+                <ReferenceQuickAnalysis referenceVideo={referenceVideo} />
+              </>
+            ) : (
+              <p>URL을 넣고 분석하면 말하기 속도, 화법, 쉬는 타이밍, 강조 방식을 간단히 보여줍니다.</p>
+            )}
+          </div>
         </aside>
       </section>
     </>
+  );
+}
+
+function ReferenceQuickAnalysis({ referenceVideo }) {
+  const profile = referenceVideo?.reference_profile || {};
+  const targets = referenceVideo?.benchmark_targets || {};
+  const items = [
+    {
+      label: "말하기 속도",
+      value: profile.speech_rate_summary || targets.speech_rate || "영상 음성 기준으로 속도를 분석합니다.",
+    },
+    {
+      label: "화법",
+      value: profile.speaking_style || profile.tone || targets.speaking_style || "설명 방식과 말투 흐름을 분석합니다.",
+    },
+    {
+      label: "쉬는 타이밍",
+      value: profile.pause_timing_summary || targets.pause_timing || "중요한 문장 뒤 쉬는 타이밍을 분석합니다.",
+    },
+    {
+      label: "강조 방식",
+      value: profile.emphasis_summary || targets.emphasis || "핵심어를 어떻게 강조하는지 분석합니다.",
+    },
+  ];
+
+  return (
+    <div className="reference-analysis-grid">
+      {items.map((item) => (
+        <div className="reference-analysis-item" key={item.label}>
+          <span>{item.label}</span>
+          <p>{item.value}</p>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1165,6 +1279,32 @@ function Report({ aiStatus, report, scriptFeedback, spokenWords }) {
           </ol>
         </div>
       </section>
+
+      {report.reference_comparison ? (
+        <div className="reference-report">
+          <h3>기준 발표 영상 비교</h3>
+          <strong>
+            {report.reference_comparison.title} · {report.reference_comparison.author_name}
+          </strong>
+          <div className="reference-targets">
+            {(report.reference_comparison.targets || ["말하기 속도", "화법", "쉬는 타이밍", "강조 방식"]).map((target) => (
+              <span key={target}>{target}</span>
+            ))}
+          </div>
+          {report.reference_comparison.reference_profile ? (
+            <p>
+              기준 음성: 초당 {report.reference_comparison.reference_profile.syllables_per_second}음절 · 문장당 평균{" "}
+              {report.reference_comparison.reference_profile.average_sentence_words}단어
+            </p>
+          ) : null}
+          <ul>
+            {(report.reference_comparison.notes || []).map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+          <p>{report.reference_comparison.analysis_note}</p>
+        </div>
+      ) : null}
 
       <div className="report-note">
         {aiLive ? "AI 분석이 반영된 리포트입니다." : "AI 연결이 불안정해 기본 분석으로 리포트를 만들었습니다."}

@@ -1,99 +1,353 @@
-# Sejong Yaho Hackathon
+CodeFlow AI
 
-세종대학교 구성원을 위한 웹앱/API 서비스 해커톤 프로젝트입니다. 현재 저장소는 프론트엔드, 백엔드, 문서, GitHub 협업 템플릿을 나누어 개발을 시작할 수 있는 초기 구조입니다.
+📌 프로젝트 소개
 
-## Directory
+CodeFlow AI는 알고리즘의 실행 흐름을 시각화하고, 단계별 AI 힌트와 오답 분석을 통해 사용자가 직접 코드를 이해하고 구현하도록 돕는 AI 코딩 학습 에이전트입니다.
 
-```text
-.
-├── frontend/   # 웹앱 화면 개발 공간
-├── backend/    # API 서버 개발 공간
-├── docs/       # 기획, 리서치, 회의, API, 발표, 버그 문서
-└── .github/    # Issue 및 Pull Request 템플릿
-```
+기존 온라인 저지 서비스는 정답 여부는 알려주지만, 코드가 왜 틀렸는지 또는 어떤 순서로 실행되는지에 대한 설명이 부족합니다. 또한 일반적인 AI 챗봇은 정답 코드를 바로 제공하는 경우가 많아 학습자의 사고 과정이 생략될 수 있습니다.
 
-## Project Scope
+CodeFlow AI는 정답을 대신 작성해주는 것이 아니라, 사용자가 코드 실행 흐름을 이해하고 스스로 문제를 해결할 수 있도록 돕는 것을 목표로 합니다.
 
-- 사용자가 실제로 겪는 문제를 빠르게 정의하고 검증합니다.
-- 프론트엔드와 백엔드를 분리해 병렬 개발합니다.
-- 문서와 이슈 기반으로 작업 내역을 추적합니다.
-- 데모 가능한 최소 기능을 우선 구현합니다.
+⸻
 
-## Branch Strategy
+🎯 문제 인식
 
-- `main`: 배포 또는 발표 가능한 안정 버전
-- `develop`: 기능 통합 브랜치
-- `feature/<name>`: 기능 개발
-- `fix/<name>`: 버그 수정
-- `docs/<name>`: 문서 수정
+코딩을 처음 배우거나 알고리즘 문제를 시작하는 학습자는 다음과 같은 어려움을 겪습니다.
+
+* 코드가 어떤 순서로 실행되는지 이해하기 어렵다.
+* 반복문, 조건문 안에서 변수 값이 어떻게 변하는지 추적하기 어렵다.
+* 온라인 저지는 정답/오답만 알려주고, 오답 원인 분석이 부족하다.
+* AI에게 질문하면 정답 코드가 바로 제공되어 직접 사고하는 과정이 줄어든다.
+* 디버거는 초보자가 사용하기 어렵고, 학습 친화적인 설명이 부족하다.
+
+⸻
+
+💡 해결 아이디어
+
+CodeFlow AI는 사용자가 작성한 코드를 분석하여 다음과 같은 학습 경험을 제공합니다.
+
+1. 코드 실행 흐름을 단계별로 시각화
+2. 변수 값과 자료구조 상태 변화 확인
+3. AI 기반 단계별 힌트 제공
+4. 오답 원인 분석 및 코드 리뷰
+5. 사용자의 풀이 기록과 학습 진행도 저장
+
+이를 통해 학습자는 단순히 정답을 확인하는 것이 아니라, 코드가 어떻게 동작하는지 이해하고 스스로 수정하는 경험을 할 수 있습니다.
+
+⸻
+
+🧩 주요 기능
+
+1. 알고리즘 문제 풀이
+
+사용자는 문제 설명, 입력/출력 예시, 제한 조건을 확인하고 웹 코드 에디터에서 직접 코드를 작성할 수 있습니다.
+
+2. 코드 실행 및 테스트
+
+작성한 코드를 실행하여 테스트케이스 결과를 확인할 수 있습니다.
+
+* 성공 여부 확인
+* 실행 결과 출력
+* 에러 메시지 확인
+* 테스트케이스별 결과 확인
+
+3. 실행 흐름 시각화
+
+코드 실행 과정을 단계별로 보여줍니다.
+
+* 현재 실행 중인 코드 라인 표시
+* 변수 값 변화 확인
+* 배열, 스택, 큐 등 자료구조 상태 변화 확인
+* 이전/다음 단계 이동
+
+4. 단계별 AI 힌트
+
+정답 코드를 바로 제공하지 않고, 학습자가 스스로 생각할 수 있도록 힌트를 단계별로 제공합니다.
+
+* 힌트 1단계: 문제 접근 방향 제시
+* 힌트 2단계: 의심되는 코드 위치 안내
+* 힌트 3단계: 수정 방법 설명
+* 마지막 단계: 정답 코드 또는 모범 풀이 제공
+
+5. 오답 분석
+
+사용자의 제출 코드를 분석하여 어떤 부분에서 문제 의도와 어긋났는지 설명합니다.
 
 예시:
 
-```bash
-git checkout -b feature/login-page
-git checkout -b fix/api-error-response
-git checkout -b docs/update-api-spec
-```
+현재 코드는 배열의 각 값을 target과 직접 비교하고 있습니다.
+하지만 이 문제는 두 수의 합이 target이 되는 인덱스를 찾는 문제입니다.
+두 값을 조합해서 확인하는 로직이 필요합니다.
 
-## Commit Rules
+6. 학습 진행도 관리
 
-커밋 메시지는 아래 형식을 사용합니다.
+사용자의 문제 풀이 기록을 저장하고 학습 현황을 제공합니다.
 
-```text
-type: summary
-```
+* 푼 문제 수
+* 정답률
+* 시도 횟수
+* 자주 틀린 유형
+* 추천 복습 개념
 
-사용 가능한 `type`:
+⸻
 
-- `feat`: 기능 추가
-- `fix`: 버그 수정
-- `docs`: 문서 변경
-- `style`: 포맷팅, 스타일 변경
-- `refactor`: 동작 변경 없는 구조 개선
-- `test`: 테스트 추가 또는 수정
-- `chore`: 설정, 빌드, 의존성 작업
+👤 사용자 흐름
 
-예시:
+문제 선택
+   ↓
+코드 작성
+   ↓
+실행
+   ↓
+실행 결과 확인
+   ↓
+실행 흐름 시각화 확인
+   ↓
+AI 힌트 확인
+   ↓
+코드 수정
+   ↓
+제출
+   ↓
+오답 분석 또는 정답 처리
 
-```bash
-git commit -m "docs: add initial project templates"
-git commit -m "feat: add onboarding screen"
-```
+⸻
 
-## Setup
+🖥️ 주요 화면
 
-아직 프론트엔드와 백엔드 프레임워크는 초기화하지 않았습니다. 각 영역의 README를 기준으로 필요한 스택을 정한 뒤 초기화합니다.
+문제 목록 화면
 
-```bash
-cd frontend
-# 프론트엔드 프레임워크 초기화 예정
+* 문제 제목
+* 난이도
+* 알고리즘 유형
+* 풀이 상태
 
-cd ../backend
-# 백엔드 프레임워크 초기화 예정
-```
+문제 풀이 화면
 
-## Demo Scenario
+* 문제 설명 영역
+* 코드 에디터
+* 실행/제출 버튼
+* 실행 결과 패널
+* AI 힌트 패널
+* 실행 흐름 시각화 영역
 
-1. 사용자가 웹앱에 접속합니다.
-2. 핵심 문제를 해결하는 메인 기능을 실행합니다.
-3. 백엔드 API가 요청을 처리하고 결과를 반환합니다.
-4. 프론트엔드가 결과를 명확하게 표시합니다.
-5. 발표자는 문제, 해결 방식, 기술 구조, 개선 계획을 설명합니다.
+학습 대시보드
 
-## Collaboration Flow
+* 전체 학습 현황
+* 알고리즘 유형별 진행도
+* 자주 틀린 유형
+* 추천 복습 문제
 
-1. 작업 전 GitHub Issue를 생성합니다.
-2. 담당자는 작업 브랜치를 생성합니다.
-3. 변경 사항을 커밋하고 Pull Request를 엽니다.
-4. 팀원이 리뷰하고 필요한 수정을 반영합니다.
-5. 승인 후 `develop` 또는 `main`에 병합합니다.
+⸻
 
-## Documents
+🛠️ 기술 스택
 
-- [아이디어](docs/idea.md)
-- [리서치](docs/research.md)
-- [회의록](docs/meeting-log.md)
-- [API 문서](docs/api.md)
-- [발표 자료](docs/presentation.md)
-- [버그 리포트](docs/bug-report.md)
+Frontend
 
+* React
+* JavaScript / TypeScript
+* Code Editor Library
+* CSS / Tailwind CSS
+
+Backend
+
+* Node.js
+* Express
+* REST API
+
+Database
+
+* PostgreSQL / Supabase
+
+AI
+
+* OpenAI API 또는 기타 LLM API
+* 코드 분석 프롬프트
+* 단계별 힌트 생성 프롬프트
+* 오답 원인 분석 프롬프트
+
+⸻
+
+🗂️ 데이터베이스 구조
+
+users
+
+사용자 정보를 저장합니다.
+
+* id
+* email
+* nickname
+* password_hash
+* created_at
+
+problems
+
+알고리즘 문제 정보를 저장합니다.
+
+* id
+* title
+* description
+* difficulty
+* category
+* input_format
+* output_format
+* constraints
+* sample_input
+* sample_output
+
+test_cases
+
+문제별 테스트케이스를 저장합니다.
+
+* id
+* problem_id
+* input
+* expected_output
+* is_hidden
+
+submissions
+
+사용자가 제출한 코드와 실행 결과를 저장합니다.
+
+* id
+* user_id
+* problem_id
+* code
+* language
+* status
+* execution_time
+* memory_usage
+* created_at
+
+execution_traces
+
+코드 실행 흐름 시각화에 필요한 데이터를 저장합니다.
+
+* id
+* submission_id
+* step_number
+* line_number
+* variables
+* stdout
+* memory_state
+
+ai_feedbacks
+
+AI 힌트와 오답 분석 내용을 저장합니다.
+
+* id
+* submission_id
+* feedback_type
+* content
+* level
+* created_at
+
+learning_progress
+
+사용자의 문제별 학습 진행도를 저장합니다.
+
+* id
+* user_id
+* problem_id
+* status
+* attempt_count
+* last_submission_id
+* solved_at
+
+⸻
+
+🔌 API 설계
+
+문제 관련 API
+
+GET /api/problems
+GET /api/problems/:id
+
+코드 실행 및 제출 API
+
+POST /api/execute
+POST /api/submit
+
+AI 피드백 API
+
+POST /api/ai/hint
+POST /api/ai/review
+POST /api/ai/error-analysis
+
+학습 진행도 API
+
+GET /api/progress
+PATCH /api/progress/:problemId
+
+⸻
+
+🤖 AI 프롬프트 설계 방향
+
+CodeFlow AI의 AI는 정답을 바로 제공하지 않고, 학습자의 사고 과정을 유지하는 방향으로 동작합니다.
+
+힌트 생성 원칙
+
+* 처음부터 정답 코드를 제공하지 않는다.
+* 사용자의 코드에서 의심되는 부분을 단계적으로 알려준다.
+* 학습자가 직접 수정할 수 있도록 질문형 힌트를 제공한다.
+* 마지막 단계에서만 정답 또는 모범 풀이를 제공한다.
+
+오답 분석 원칙
+
+* 단순히 틀렸다고 말하지 않는다.
+* 문제 요구사항과 사용자 코드의 차이를 설명한다.
+* 어떤 로직이 부족한지 구체적으로 알려준다.
+* 다음 시도에서 확인해야 할 부분을 제안한다.
+
+⸻
+
+🚀 MVP 목표
+
+해커톤 MVP에서는 다음 기능을 우선 구현합니다.
+
+* 문제 목록 조회
+* 문제 상세 조회
+* 코드 에디터 UI
+* 코드 실행 결과 표시
+* AI 힌트 제공
+* 오답 분석 제공
+* 실행 흐름 시각화 Mock 데이터 표시
+
+⸻
+
+📌 기대 효과
+
+CodeFlow AI를 통해 학습자는 다음과 같은 효과를 얻을 수 있습니다.
+
+* 코드 실행 흐름을 눈으로 보며 이해할 수 있다.
+* 변수 값 변화를 단계별로 확인할 수 있다.
+* 정답을 바로 보는 것이 아니라 직접 사고하며 문제를 해결할 수 있다.
+* 오답 원인을 분석하고 다시 시도할 수 있다.
+* 자신의 약점 알고리즘 유형을 파악할 수 있다.
+
+⸻
+
+🔮 향후 발전 방향
+
+* Python, Java, C++ 등 다양한 언어 지원
+* 알고리즘 유형별 맞춤 시각화
+* 실제 코드 실행 기반 Trace 생성
+* 개인별 약점 분석 대시보드
+* 교육자용 관리자 페이지
+* 반별 과제 관리 및 학습 리포트 제공
+
+⸻
+
+👥 팀원 역할
+
+이름	역할	담당
+팀원 1	PM / 기획	서비스 기획, 발표, UX 흐름
+팀원 2	Frontend	화면 구현, 코드 에디터, 시각화 UI
+팀원 3	Backend	API, DB, 코드 실행 처리
+팀원 4	AI / Logic	프롬프트 설계, AI 힌트, 오답 분석
+
+⸻
+
+📎 프로젝트 한 줄 요약
+
+CodeFlow AI는 정답을 대신 작성해주는 AI가 아니라, 사용자가 코드 실행 흐름을 이해하고 직접 문제를 해결하도록 돕는 학습형 코딩 에이전트입니다.

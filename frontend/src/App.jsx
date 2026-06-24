@@ -1,26 +1,28 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  BarChart3,
+  Clock3,
   FileText,
+  Leaf,
   Loader2,
+  MessageCircle,
+  Mic,
   Play,
   RefreshCcw,
   Send,
   Square,
+  SquarePlay,
   Upload,
 } from "lucide-react";
-import doyunAvatar from "./assets/characters/doyun.svg";
-import harinAvatar from "./assets/characters/harin.svg";
-import minjunAvatar from "./assets/characters/minjun.svg";
-import seoyeonAvatar from "./assets/characters/seoyeon.svg";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8010";
 
 const audience = [
-  { name: "민준", color: "coral", style: "wave", avatar: minjunAvatar },
-  { name: "하린", color: "mint", style: "calm", avatar: harinAvatar },
-  { name: "서연", color: "yellow", style: "bright", avatar: seoyeonAvatar },
-  { name: "도윤", color: "blue", style: "focus", avatar: doyunAvatar },
+  { name: "민서", color: "coral", accessory: "clip" },
+  { name: "준", color: "mint", accessory: "glasses" },
+  { name: "하린", color: "yellow", accessory: "bow" },
+  { name: "도윤", color: "blue", accessory: "headset" },
 ];
 
 const reactionCopy = {
@@ -34,7 +36,7 @@ const reactionCopy = {
 
 const situationMessages = {
   opening: {
-    name: "민준",
+    name: "민서",
     reaction: "attentive",
     text: "좋아요. 차분하게 시작해볼게요.",
     coaching: "첫 문장은 천천히, 핵심 주제를 분명하게 말해보세요.",
@@ -46,7 +48,7 @@ const situationMessages = {
     coaching: "좋은 속도예요. 지금 리듬을 유지하세요.",
   },
   tooFast: {
-    name: "민준",
+    name: "준",
     reaction: "tooFast",
     text: "조금 빨라요. 핵심어가 지나가고 있어요.",
     coaching: "문장 끝에서 짧게 쉬고 다음 문장으로 넘어가세요.",
@@ -58,13 +60,13 @@ const situationMessages = {
     coaching: "침묵이 생겼어요. 준비한 연결 문장을 사용해보세요.",
   },
   longSilence: {
-    name: "민준",
+    name: "민서",
     reaction: "sleepy",
     text: "침묵이 길어지고 있어요.",
     coaching: "긴 침묵은 집중도를 낮춰요. 다음 핵심 문장으로 바로 이어가세요.",
   },
   unclear: {
-    name: "민준",
+    name: "준",
     reaction: "confused",
     text: "목소리는 들리는데 문장이 잘 안 잡혀요.",
     coaching: "조금 더 또박또박 말하면 인식과 전달력이 좋아져요.",
@@ -77,47 +79,14 @@ const situationMessages = {
   },
 };
 
-const reactionPool = {
-  opening: [
-    { name: "민준", reaction: "attentive", text: "좋아요. 시작 리듬 괜찮아요." },
-    { name: "하린", reaction: "attentive", text: "첫 문장, 더 또렷하게 가도 좋아요." },
-  ],
-  goodPace: [
-    { name: "하린", reaction: "excited", text: "지금 템포 좋아요. 계속 가요." },
-    { name: "도윤", reaction: "excited", text: "듣기 편해졌어요." },
-    { name: "민준", reaction: "attentive", text: "핵심이 잘 들어와요." },
-  ],
-  tooFast: [
-    { name: "민준", reaction: "tooFast", text: "조금 빨라요. 키워드가 스쳐가요." },
-    { name: "하린", reaction: "confused", text: "방금 문장은 한 번 쉬어가면 좋아요." },
-    { name: "도윤", reaction: "tooFast", text: "속도만 낮추면 훨씬 선명해져요." },
-  ],
-  tooSlow: [
-    { name: "도윤", reaction: "tooSlow", text: "잠깐 흐름이 느려졌어요." },
-    { name: "민준", reaction: "sleepy", text: "다음 문장으로 바로 이어가요." },
-  ],
-  longSilence: [
-    { name: "민준", reaction: "sleepy", text: "침묵이 길어요. 복구 문장으로 넘어가요." },
-    { name: "서연", reaction: "confused", text: "지금은 다음 핵심으로 돌아오면 돼요." },
-  ],
-  unclear: [
-    { name: "민준", reaction: "confused", text: "목소리는 있는데 문장이 흐려요." },
-    { name: "하린", reaction: "confused", text: "조금 더 또박또박 말해보세요." },
-  ],
-  offScript: [
-    { name: "하린", reaction: "confused", text: "대본 핵심어가 잠깐 멀어졌어요." },
-    { name: "도윤", reaction: "attentive", text: "주제어를 다시 잡으면 좋아요." },
-  ],
-};
-
-const audienceReactionMap = {
-  attentive: ["attentive", "excited", "attentive", "confused"],
-  excited: ["excited", "attentive", "excited", "sleepy"],
-  sleepy: ["sleepy", "tooSlow", "sleepy", "confused"],
-  confused: ["confused", "attentive", "confused", "tooSlow"],
-  tooFast: ["tooFast", "confused", "tooFast", "attentive"],
-  tooSlow: ["tooSlow", "sleepy", "attentive", "tooSlow"],
-};
+const analysisItems = [
+  { label: "말 빠르기", icon: Mic },
+  { label: "침묵 구간", icon: Clock3 },
+  { label: "대본 전달력", icon: BarChart3 },
+  { label: "쿠션어 사용", icon: MessageCircle },
+  { label: "전환 문장 타이밍", icon: Clock3 },
+  { label: "마무리 밀도", icon: BarChart3 },
+];
 
 function tokenCount(text) {
   return (text.toLowerCase().match(/[가-힣a-z0-9']+/g) || []).length;
@@ -185,6 +154,7 @@ function App() {
   const [isPresenting, setIsPresenting] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [transcriptSegments, setTranscriptSegments] = useState([]);
   const [interimTranscript, setInterimTranscript] = useState("");
@@ -230,10 +200,7 @@ function App() {
   const calibrationRef = useRef({ samples: [], done: false });
   const lastChatKeyRef = useRef("");
   const lastChatAtRef = useRef(0);
-  const chatVariantRef = useRef({});
-  const recentSituationRef = useRef([]);
   const transcriptScrollRef = useRef(null);
-  const chatScrollRef = useRef(null);
   const metricsRef = useRef({
     elapsed: 0,
     transcript: "",
@@ -305,12 +272,6 @@ function App() {
     }
   }, [liveTranscript]);
 
-  useEffect(() => {
-    const container = chatScrollRef.current;
-    if (!container) return;
-    container.scrollTop = container.scrollHeight;
-  }, [chat]);
-
   const resetRealtimeRefs = () => {
     transcriptRef.current = "";
     interimRef.current = "";
@@ -327,8 +288,6 @@ function App() {
     calibrationRef.current = { samples: [], done: false };
     lastChatKeyRef.current = "";
     lastChatAtRef.current = 0;
-    chatVariantRef.current = {};
-    recentSituationRef.current = [];
   };
 
   const refreshAiStatus = async () => {
@@ -347,37 +306,25 @@ function App() {
   };
 
   const pushChatForSituation = (nextSituation, now, force = false) => {
-    const recent = recentSituationRef.current;
-    let messageKey = nextSituation;
-    if (!force && recent.length >= 2 && recent.every((item) => item === nextSituation)) {
-      if (nextSituation === "opening") messageKey = "goodPace";
-      else if (nextSituation === "goodPace") messageKey = "opening";
-      else messageKey = "opening";
-    }
-
     const shouldPost =
       force ||
-      messageKey !== lastChatKeyRef.current ||
-      now - lastChatAtRef.current > 11000 ||
-      ["longSilence", "tooFast", "unclear"].includes(messageKey);
+      nextSituation !== lastChatKeyRef.current ||
+      now - lastChatAtRef.current > 9000 ||
+      ["longSilence", "tooFast", "unclear"].includes(nextSituation);
 
     if (!shouldPost || now - lastChatAtRef.current < 3500) return;
 
-    const variants = reactionPool[messageKey] || reactionPool.opening;
-    const variantIndex = chatVariantRef.current[messageKey] || 0;
-    const message = variants[variantIndex % variants.length];
-    chatVariantRef.current[messageKey] = variantIndex + 1;
-    recentSituationRef.current = [...recent.slice(-2), nextSituation];
+    const message = situationMessages[nextSituation] || situationMessages.opening;
     setChat((prev) => [
-      ...prev.slice(-18),
+      ...prev.slice(-6),
       {
-        id: `${now}-${messageKey}-${variantIndex}`,
+        id: `${now}-${nextSituation}`,
         name: message.name,
         text: message.text,
         reaction: message.reaction,
       },
     ]);
-    lastChatKeyRef.current = messageKey;
+    lastChatKeyRef.current = nextSituation;
     lastChatAtRef.current = now;
   };
 
@@ -679,27 +626,30 @@ function App() {
     }
   };
 
-  const importScriptFile = (file) => {
+  const importScriptFile = async (file) => {
     if (!file) return;
     setError("");
-    if (file.size > 1024 * 1024 * 2) {
-      setError("2MB 이하의 텍스트 파일만 불러올 수 있습니다.");
+    if (file.size > 1024 * 1024 * 10) {
+      setError("10MB 이하의 파일만 불러올 수 있습니다.");
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result || "").trim();
-      if (!text) {
-        setError("파일에서 읽을 수 있는 대본 내용을 찾지 못했습니다.");
-        return;
-      }
-      setScript(text);
-    };
-    reader.onerror = () => {
-      setError("파일을 읽지 못했습니다. txt 또는 md 파일로 다시 시도해 주세요.");
-    };
-    reader.readAsText(file, "UTF-8");
+    setIsImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(`${API_BASE_URL}/api/script/import`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || "파일을 읽지 못했습니다.");
+      setScript(data.text);
+    } catch (err) {
+      setError(err.message || "파일을 읽지 못했습니다. txt, md, pdf, docx, pptx 파일로 다시 시도해 주세요.");
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   const finishPresentation = async () => {
@@ -774,6 +724,7 @@ function App() {
           <SetupPage
             aiStatus={aiStatus}
             error={error}
+            isImporting={isImporting}
             isStarting={isStarting}
             importScriptFile={importScriptFile}
             script={script}
@@ -795,8 +746,8 @@ function App() {
             overlap={overlap}
             reaction={reaction}
             recognitionStatus={recognitionStatus}
+            script={script}
             situation={situation}
-            chatScrollRef={chatScrollRef}
             transcriptScrollRef={transcriptScrollRef}
             voiceActive={voiceActive}
             volume={volume}
@@ -821,11 +772,12 @@ function App() {
   );
 }
 
-function SetupPage({ aiStatus, error, importScriptFile, isStarting, script, setScript, startPresentation }) {
+function SetupPage({ aiStatus, error, importScriptFile, isImporting, isStarting, script, setScript, startPresentation }) {
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef(null);
-  const wordCount = tokenCount(script);
-  const minutes = Math.max(1, Math.round(wordCount / 120));
+  const scriptWords = tokenCount(script);
+  const estimatedMinutes = Math.max(1, Math.round(scriptWords / 135));
+  const keywordEstimate = scriptWords ? Math.min(12, Math.max(1, Math.round(scriptWords / 18))) : 0;
 
   const handleDrop = (event) => {
     event.preventDefault();
@@ -834,61 +786,138 @@ function SetupPage({ aiStatus, error, importScriptFile, isStarting, script, setS
   };
 
   return (
-    <section className="setup-focus">
-      <header className="setup-hero">
-        <p className="eyebrow">Presentation Coach</p>
-        <h1>대본을 올리면, 리허설이 시작됩니다</h1>
-        <p>말의 리듬과 놓친 순간만 선명하게 남깁니다.</p>
-      </header>
-
-      {error && <div className="notice">{error}</div>}
-
-      <section className="script-composer">
-        <div className="composer-meta">
-          <span>{wordCount}개 단어</span>
-          <span>예상 {minutes}분</span>
-          <span>{aiStatus?.live ? "AI 리포트 연결됨" : "기본 분석 사용"}</span>
+    <>
+      <nav className="brand-nav" aria-label="서비스">
+        <a className="brand-mark" href="#top" aria-label="온라인 발표 연습실">
+          <span className="brand-spark"><Leaf size={13} /></span>
+          rehearsal note
+        </a>
+        <div className="nav-links">
+          <a href="#script">대본</a>
+          <a href="#insight">피드백</a>
+          <a href="#script">시작</a>
         </div>
-        <div className="script-panel setup-script dark-script">
+      </nav>
+
+      <header className="product-header">
+        <div className="hero-copy">
+          <p className="eyebrow">Presentation rehearsal</p>
+          <h1>
+            내가 닮을 발표
+            <span>Pitch up</span>
+          </h1>
+          <div className="hero-actions">
+            <button className="primary-button" disabled={isStarting} onClick={startPresentation}>
+              {isStarting ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
+              발표 시작
+            </button>
+            <span className="hero-note">마이크 권한은 연습을 시작할 때만 요청합니다.</span>
+          </div>
+        </div>
+        <div className="script-panel setup-script hero-script" id="script">
+          <div className="panel-heading">
+            <h2>발표 대본</h2>
+            <span>{scriptWords} words · 예상 {estimatedMinutes}분</span>
+          </div>
           <textarea
             value={script}
             onChange={(event) => setScript(event.target.value)}
             placeholder={"여기에 발표 대본을 붙여넣으세요.\n\n예) 안녕하세요. 오늘은..."}
           />
+          <div
+            className={`file-dropzone inline ${dragging ? "dragging" : ""}`}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setDragging(true);
+            }}
+            onDragOver={(event) => event.preventDefault()}
+            onDragLeave={() => setDragging(false)}
+            onDrop={handleDrop}
+          >
+            <FileText size={20} />
+            <strong>대본이나 발표 자료를 여기에 놓으세요</strong>
+            <span>직접 쓰거나 txt, md, pdf, docx, pptx 파일에서 텍스트를 불러옵니다.</span>
+            <button className="file-button" type="button" disabled={isImporting} onClick={() => fileInputRef.current?.click()}>
+              {isImporting ? <Loader2 className="spin" size={17} /> : <Upload size={17} />}
+              {isImporting ? "불러오는 중" : "파일 불러오기"}
+            </button>
+            <input
+              ref={fileInputRef}
+              hidden
+              type="file"
+              accept=".txt,.md,.markdown,.text,.csv,.srt,.pdf,.docx,.pptx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+              onChange={(event) => {
+                importScriptFile(event.target.files?.[0]);
+                event.target.value = "";
+              }}
+            />
+          </div>
         </div>
+      </header>
 
-        <div
-          className={`file-dropzone ${dragging ? "dragging" : ""}`}
-          onDragEnter={(event) => {
-            event.preventDefault();
-            setDragging(true);
-          }}
-          onDragOver={(event) => event.preventDefault()}
-          onDragLeave={() => setDragging(false)}
-          onDrop={handleDrop}
-        >
-          <FileText size={20} />
-          <strong>대본 파일을 끌어다 놓거나 선택하세요</strong>
-          <span>txt, md 같은 텍스트 파일을 바로 대본으로 불러옵니다.</span>
-          <button className="file-button" type="button" onClick={() => fileInputRef.current?.click()}>
-            <Upload size={17} />
-            파일 추가
-          </button>
-          <input
-            ref={fileInputRef}
-            hidden
-            type="file"
-            accept=".txt,.md,.text,.csv,.srt"
-            onChange={(event) => importScriptFile(event.target.files?.[0])}
-          />
+      {error && <div className="notice">{error}</div>}
+
+      <div className="reference-link-panel">
+        <div className="reference-link-copy">
+          <span>reference model</span>
+          <strong>닮고 싶은 발표를 넣어주세요</strong>
+          <p>원하는 발표 레퍼런스를 분석해 내 대본과 비교합니다.</p>
         </div>
+        <div className="youtube-link-shell youtube-link-shell-light">
+          <SquarePlay size={16} />
+          <label>
+            <span>youtube reference</span>
+            <input type="url" placeholder="https://youtube.com/watch?v=..." aria-label="유튜브 링크" />
+          </label>
+        </div>
+      </div>
 
-        <button className="start-button" disabled={isStarting} onClick={startPresentation}>
-          {isStarting ? <Loader2 className="spin" size={19} /> : <Play size={19} />}
-          발표 시작
-        </button>
+      <section className="setup-grid">
+        <aside className="hero-dashboard setup-dashboard" aria-label="리허설 프리뷰">
+          <div className="dashboard-topline">
+            <span>session brief</span>
+            <strong>{scriptWords || 0} words</strong>
+          </div>
+          <div className="preview-metrics">
+            <div className="preview-card raised">
+              <Clock3 size={18} />
+              <span>예상 시간</span>
+              <strong>{estimatedMinutes}<small>분</small></strong>
+            </div>
+            <div className="preview-card">
+              <BarChart3 size={18} />
+              <span>피드백</span>
+              <strong>{analysisItems.length}<small>가지</small></strong>
+            </div>
+          </div>
+          <div className="mini-chart" aria-label="리허설 분석 예시">
+            <div className="brief-line">
+              <span>pace</span>
+              <strong>5.9 syll/sec</strong>
+            </div>
+            <div className="brief-line">
+              <span>pause</span>
+              <strong>2.4 sec longest</strong>
+            </div>
+            <div className="brief-line">
+              <span>script</span>
+              <strong>{keywordEstimate ? `핵심어 ${keywordEstimate}개 후보` : "대본 입력 대기"}</strong>
+            </div>
+            <p className="brief-copy">문장 끝에서 호흡이 조금 짧습니다. 두 번째 전환부 앞에 쉼표를 하나 더 두세요.</p>
+          </div>
+        </aside>
+
+        <aside className="ready-panel" id="insight">
+          <div className="service-checklist">
+            <h2>조용히 봐드릴 부분</h2>
+            <p>발표를 끊지 않고, 끝난 뒤 필요한 부분만 부드럽게 정리합니다.</p>
+            {analysisItems.map(({ icon: Icon, label }) => (
+              <span key={label}><Icon size={15} />{label}</span>
+            ))}
+          </div>
+        </aside>
       </section>
-    </section>
+    </>
   );
 }
 
@@ -905,7 +934,7 @@ function PracticePage({
   paceLabel,
   reaction,
   recognitionStatus,
-  chatScrollRef,
+  script,
   silenceLabel,
   situation,
   transcriptScrollRef,
@@ -949,7 +978,7 @@ function PracticePage({
               <AudienceTile
                 key={person.name}
                 person={person}
-                reaction={audienceReactionFor(reaction, index)}
+                reaction={index === 0 ? reaction : softenReaction(reaction, index)}
                 active
                 volume={volume}
               />
@@ -970,7 +999,7 @@ function PracticePage({
               <h2>관객 반응</h2>
               <Send size={17} />
             </div>
-            <div className="chat-list" ref={chatScrollRef}>
+            <div className="chat-list">
               {chat.length === 0 ? (
                 <div className="empty-chat">발표가 시작되면 반응이 표시됩니다.</div>
               ) : (
@@ -989,11 +1018,17 @@ function PracticePage({
         </aside>
       </div>
 
-      <section className="transcript-layout single-transcript">
+      <section className="transcript-layout">
         <div className="transcript-strip transcript-log">
           <strong>인식된 발표</strong>
           <div className="scroll-text" ref={transcriptScrollRef}>
             {liveTranscript ? <p>{liveTranscript}</p> : <p className="muted">말을 시작하면 여기에 누적됩니다.</p>}
+          </div>
+        </div>
+        <div className="cue-strip">
+          <strong>대본</strong>
+          <div className="scroll-text">
+            <p>{script}</p>
           </div>
         </div>
       </section>
@@ -1021,20 +1056,27 @@ function ReportPage({ aiStatus, error, report, reset, scriptFeedback, spokenWord
   );
 }
 
-function audienceReactionFor(reaction, index) {
-  return audienceReactionMap[reaction]?.[index] || "attentive";
+function softenReaction(reaction, index) {
+  if (reaction === "tooFast" && index === 2) return "confused";
+  if (reaction === "tooSlow" && index === 1) return "sleepy";
+  if (reaction === "excited" && index === 3) return "attentive";
+  return reaction;
 }
 
 function AudienceTile({ person, reaction, active, volume }) {
   return (
-    <article className={`audience-tile ${person.color} ${active ? "active" : ""}`}>
-      <div
-        className={`avatar character ${person.style} ${reaction}`}
-        style={{ "--bob": `${Math.min(volume * 32, 2)}px` }}
-      >
-        <span className="character-shadow" />
-        <img className="character-asset" alt={`${person.name} audience avatar`} src={person.avatar} />
-        <span className="reaction-mark">{reactionCopy[reaction]}</span>
+    <article className={`audience-tile ${active ? "active" : ""}`}>
+      <div className={`avatar ${person.color} ${reaction}`} style={{ "--bob": `${Math.min(volume * 30, 1.6)}px` }}>
+        <div className={`accessory ${person.accessory}`} />
+        <div className="ear left" />
+        <div className="ear right" />
+        <div className="face">
+          <span className="eye left" />
+          <span className="eye right" />
+          <span className="mouth" />
+          <span className="cheek left" />
+          <span className="cheek right" />
+        </div>
       </div>
       <div className="audience-info">
         <strong>{person.name}</strong>

@@ -257,6 +257,48 @@ def extract_youtube_video_id(url: str) -> str | None:
     return None
 
 
+HARDCODED_REFERENCE_VIDEOS: dict[str, dict[str, Any]] = {
+    "NN4GVaBvroE": {
+        "video_id": "NN4GVaBvroE",
+        "embed_url": "https://www.youtube.com/embed/NN4GVaBvroE",
+        "title": "미친 자산 변동, 누가 벌고 누가 깨졌나",
+        "author_name": "슈카월드",
+        "thumbnail_url": "https://i.ytimg.com/vi/NN4GVaBvroE/hqdefault.jpg",
+        "reference_profile": {
+            "transcript_source": "youtube_caption_hardcoded",
+            "duration_seconds": 2580,
+            "word_count": 5633,
+            "syllables_per_second": 5.79,
+            "words_per_minute": 131.0,
+            "average_sentence_words": 8.4,
+            "tone": "짧은 의미 단위로 빠르게 전환하는 금융 해설형 말투",
+            "speaking_style": "시장 데이터를 던진 뒤 청중 감정과 사례를 이어 붙이는 스토리텔링형 해설",
+            "pause_timing_summary": "문장 길이는 짧지만 숫자, 종목명, 결론 직후에 의미 단위가 끊기며 리듬을 만듭니다.",
+            "emphasis_summary": "코스피 9천, 포모, 삼성전자, 하이닉스, 변동성처럼 숫자와 고유명사를 반복해 핵심 장면을 각인합니다.",
+            "top_keywords": ["코스피", "포모", "삼성전자", "하이닉스", "사이드카", "변동성", "시장", "투자자"],
+            "speech_rate_summary": "43분 자막 기준 초당 5.79음절, 분당 131단어로 빠르지만 청중이 따라올 수 있는 해설형 속도입니다.",
+            "word_choice_summary": "전문 지표를 일상어, 농담, 반복 구호와 섞어 복잡한 시장 상황을 쉽게 풀어냅니다.",
+        },
+        "benchmark_targets": {
+            "speech_rate": "초당 5.79음절, 분당 131단어를 기준으로 빠르지만 또렷한 설명 리듬을 비교합니다.",
+            "speaking_style": "데이터 제시 -> 감정 해석 -> 사례 확장의 순서로 청중 몰입을 만드는 해설 구조를 기준으로 봅니다.",
+            "pause_timing": "숫자와 결론을 말한 직후 짧게 끊어 핵심 정보가 남는지 비교합니다.",
+            "emphasis": "코스피, 포모, 삼성전자, 하이닉스, 변동성 같은 반복 키워드를 발표의 강조 축으로 삼습니다.",
+        },
+        "analysis_note": "제공된 한국어 자동 자막을 기존 분석 함수로 계산한 뒤, 발표 코칭용 기준 문구를 보강해 고정 적용했습니다.",
+    }
+}
+
+
+def build_hardcoded_reference_video(video_id: str, url: str) -> dict[str, Any] | None:
+    reference = HARDCODED_REFERENCE_VIDEOS.get(video_id)
+    if not reference:
+        return None
+    payload = json.loads(json.dumps(reference, ensure_ascii=False))
+    payload["url"] = url
+    return payload
+
+
 async def build_reference_video(url: str | None) -> dict[str, Any] | None:
     if not url or not url.strip():
         return None
@@ -265,6 +307,10 @@ async def build_reference_video(url: str | None) -> dict[str, Any] | None:
     video_id = extract_youtube_video_id(clean_url)
     if not video_id:
         raise HTTPException(status_code=400, detail="올바른 YouTube 영상 주소를 입력해 주세요.")
+
+    hardcoded_reference = build_hardcoded_reference_video(video_id, clean_url)
+    if hardcoded_reference:
+        return hardcoded_reference
 
     reference = {
         "url": clean_url,
@@ -1681,7 +1727,6 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
     if session.reference_video:
         report["reference_comparison"] = build_reference_comparison(report, session.reference_video)
     report["detailed_feedback"] = build_detailed_feedback(report, issue_log)
-    return report
 
     if session.reference_video:
         report["reference_video"] = session.reference_video

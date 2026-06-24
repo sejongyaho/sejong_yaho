@@ -545,6 +545,47 @@ h1 span {
   background: rgba(255, 253, 245, 0.72);
 }
 
+.reference-analysis-note {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(209, 118, 84, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 253, 245, 0.78);
+  padding: 12px;
+}
+
+.reference-analysis-note strong {
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.reference-analysis-note p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.reference-analysis-note div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.reference-analysis-note span {
+  border: 1px solid rgba(209, 118, 84, 0.24);
+  border-radius: 999px;
+  background: #fff;
+  padding: 4px 8px;
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
 .dashboard-topline {
   justify-content: space-between;
   min-height: 40px;
@@ -2127,7 +2168,7 @@ textarea::placeholder {
   line-height: 1.55;
 }
 
-@media (max-width: 1040px) {
+@media (max-width: 980px) {
   .setup-grid,
   .practice-layout,
   .transcript-layout,

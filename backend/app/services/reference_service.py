@@ -34,8 +34,8 @@ HARDCODED_REFERENCE_VIDEOS: dict[str, dict[str, Any]] = {
     "NN4GVaBvroE": {
         "video_id": "NN4GVaBvroE",
         "embed_url": "https://www.youtube.com/embed/NN4GVaBvroE",
-        "title": "레퍼런스 발표 영상",
-        "author_name": "YouTube",
+        "title": "슈카 유튜브 레퍼런스",
+        "author_name": "슈카월드",
         "thumbnail_url": "https://i.ytimg.com/vi/NN4GVaBvroE/hqdefault.jpg",
         "reference_profile": {
             "transcript_source": "youtube_caption_hardcoded",
@@ -58,7 +58,7 @@ HARDCODED_REFERENCE_VIDEOS: dict[str, dict[str, Any]] = {
             "pause_timing": "핵심 숫자나 사례 설명 직후 잠깐 쉬는 패턴을 봅니다.",
             "emphasis": "반복되는 핵심어와 숫자 강조를 중심으로 봅니다.",
         },
-        "analysis_note": "하드코딩된 기준 발표 프로필을 사용하고 있습니다.",
+        "analysis_note": "하드코딩된 슈카 경제 해설형 레퍼런스 프로필을 사용합니다.",
     }
 }
 

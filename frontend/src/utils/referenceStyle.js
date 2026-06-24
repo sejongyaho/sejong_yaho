@@ -19,7 +19,7 @@ export function buildSelectedReferenceStyle(referenceVideo) {
   return {
     id: `ref-${videoId}`,
     title: referenceVideo?.title || `YouTube 영상 ${videoId}`,
-    source: "youtube",
+    source: referenceVideo?.source || (referenceVideo?.file_name ? "upload" : "youtube"),
     url: referenceVideo?.url || referenceVideo?.embed_url || "",
     speakerName: getReferenceSpeakerName(referenceVideo),
     profile: {

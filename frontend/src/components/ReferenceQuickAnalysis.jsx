@@ -2,6 +2,7 @@ export default function ReferenceQuickAnalysis({ referenceVideo, onPracticeWithS
   const profile = referenceVideo?.reference_profile || {};
   const targets = referenceVideo?.benchmark_targets || {};
   const keywords = profile.top_keywords || [];
+  const analysisNote = cleanReferenceNote(referenceVideo?.analysis_note) || "영상 레퍼런스 기준을 만들었습니다.";
   const features = [
     {
       label: "속도",
@@ -26,7 +27,7 @@ export default function ReferenceQuickAnalysis({ referenceVideo, onPracticeWithS
       <div className="reference-analysis-main">
         <div className="reference-analysis-note">
           <strong>Reference Profile</strong>
-          <p>{referenceVideo.analysis_note || "영상 레퍼런스 기준을 만들었습니다."}</p>
+          <p>{analysisNote}</p>
           <div>
             {(keywords.length ? keywords : ["경제 해설", "고밀도 설명", "짧은 쉼", "음량 강조"]).slice(0, 6).map((keyword) => (
               <span key={keyword}>{keyword}</span>
@@ -52,4 +53,8 @@ export default function ReferenceQuickAnalysis({ referenceVideo, onPracticeWithS
       ) : null}
     </div>
   );
+}
+
+function cleanReferenceNote(value) {
+  return String(value || "").replace(/하드코딩된\s*/g, "").trim();
 }

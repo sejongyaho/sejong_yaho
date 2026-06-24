@@ -20,18 +20,23 @@ import {
   RefreshCcw,
   Search,
   Settings,
-  SquarePlay,
   Upload,
 } from "lucide-react";
 import PreFeedbackPage from "./components/PreFeedbackPage";
 import PracticePage from "./components/PracticePage";
-import ReferenceQuickAnalysis from "./components/ReferenceQuickAnalysis";
+import SectionPracticePage from "./components/SectionPracticePage";
 import { audience, situationMessages } from "./data/audience";
 import { preFeedbackMock } from "./data/preFeedbackMock";
 import {
+  addPracticeHistoryRecord,
+  buildAnalysisRecord,
+  completeSectionPractice,
+  loadPracticeHistory,
+  summarizeReferenceGrowth,
+} from "./data/referencePractice";
+import {
   buildPreparationSignature,
   clamp,
-  formatReferenceStatus,
   getSituation,
   looksLikeScriptFile,
   reactionForAudience,
@@ -52,6 +57,7 @@ import {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 const SETUP_STORAGE_KEY = "presentation.setup.v1";
 const LOCAL_SESSION_PREFIX = "local-practice";
+const MIN_REFERENCE_ANALYSIS_MS = 1500;
 const DEFAULT_PRACTICE_SCRIPT =
   "안녕하세요. 오늘은 발표 연습을 시작하겠습니다. 핵심 내용을 또렷하게 전달하고, 중요한 문장 뒤에는 잠깐 멈추며, 마지막에는 결론을 분명하게 정리해 보겠습니다.";
 const DEFAULT_SCRIPT_FEEDBACK = {
@@ -93,9 +99,14 @@ function isLocalSession(sessionId) {
   return String(sessionId || "").startsWith(LOCAL_SESSION_PREFIX);
 }
 
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function pageFromPath(pathname) {
   if (pathname === "/pre-feedback" || pathname === "/feedback/pre") return "preFeedback";
   if (pathname === "/records") return "records";
+  if (pathname === "/section-practice") return "sectionPractice";
   if (pathname === "/practice" || pathname === "/rehearsal") return "setup";
   return "setup";
 }
@@ -125,7 +136,6 @@ const REFERENCE_VIDEO_TEMPLATE = {
   },
   status_label: "기준 분석 완료 · 경제 해설형 발표자",
 };
-
 function extractYoutubeVideoId(input) {
   const value = input.trim();
   if (!value) return "";
@@ -172,7 +182,46 @@ async function buildReferenceVideoPreview(url) {
     title: metadata.title || (videoId ? "YouTube 기준 영상" : REFERENCE_VIDEO_TEMPLATE.title),
     author_name: metadata.author_name || REFERENCE_VIDEO_TEMPLATE.author_name,
     thumbnail_url: thumbnail,
+    source: "youtube",
     source_url: url,
+  };
+}
+
+function buildUploadedReferenceVideo(file) {
+  const fileName = file?.name || "업로드한 레퍼런스";
+  const seed = fileName.length + Math.round((file?.size || 0) / 250000);
+  const wordsPerMinute = 128 + (seed % 24);
+  const syllablesPerSecond = Number(((wordsPerMinute * 2.6) / 60).toFixed(2));
+
+  return {
+    video_id: `uploaded-${Date.now()}`,
+    title: fileName.replace(/\.[^.]+$/, "") || "직접 업로드한 레퍼런스",
+    author_name: "직접 업로드한 레퍼런스",
+    thumbnail_url: "",
+    source: "upload",
+    file_name: fileName,
+    file_type: file?.type || "media",
+    file_size: file?.size || 0,
+    analysis_note: "업로드한 파일을 커스텀 레퍼런스로 등록했습니다.",
+    reference_profile: {
+      transcript_source: "uploaded_media",
+      syllables_per_second: syllablesPerSecond,
+      words_per_minute: wordsPerMinute,
+      average_sentence_words: 12,
+      top_keywords: ["맞춤형", "레퍼런스", "속도", "쉼", "강조"],
+      speech_rate_summary: `${wordsPerMinute} WPM 기준으로 내 발표 속도를 비교합니다.`,
+      speaking_style: "업로드한 발표자의 흐름을 따라가는 맞춤형 발표 스타일입니다.",
+      pause_timing_summary: "핵심 문장과 전환 문장 전후의 쉼을 기준으로 봅니다.",
+      emphasis_summary: "반복되는 핵심어와 문장 전환부의 강조를 기준으로 봅니다.",
+      word_choice_summary: "업로드한 레퍼런스의 문제 제기, 해결, 사례, 마무리 흐름을 기준으로 비교합니다.",
+    },
+    benchmark_targets: {
+      speech_rate: `${wordsPerMinute} WPM 안팎의 커스텀 기준 속도`,
+      speaking_style: "업로드한 발표처럼 흐름과 근거를 자연스럽게 연결하는 말투",
+      pause_timing: "핵심 문장 전후에 짧게 멈추는 방식",
+      emphasis: "핵심 키워드와 전환 문장을 분명하게 강조",
+    },
+    status_label: "커스텀 레퍼런스 프로파일 생성 완료",
   };
 }
 
@@ -208,6 +257,11 @@ function App() {
   const [referenceVideoUrl, setReferenceVideoUrl] = useState("");
   const [referenceVideo, setReferenceVideo] = useState(null);
   const [selectedReferenceStyle, setSelectedReferenceStyle] = useState(() => loadSelectedReferenceStyle());
+  const [practiceHistory, setPracticeHistory] = useState(() => loadPracticeHistory());
+  const [sectionPracticeContext, setSectionPracticeContext] = useState({
+    sectionId: "intro",
+    recordId: "",
+  });
   const [isLoadingReference, setIsLoadingReference] = useState(false);
   const [isPreparing, setIsPreparing] = useState(false);
   const [recognitionStatus, setRecognitionStatus] = useState("대기 중");
@@ -274,10 +328,8 @@ function App() {
     const stored = loadStoredSetup();
     if (stored) {
       setScript(stored.script || "");
-      setReferenceVideoUrl(stored.referenceVideoUrl || "");
       setScriptFeedback(stored.scriptFeedback || null);
       setMaterialFeedback(stored.materialFeedback || null);
-      setReferenceVideo(stored.referenceVideo || null);
       setPreparedSignature(stored.preparedSignature || "");
     }
     const restoreTimer = window.setTimeout(() => {
@@ -393,15 +445,49 @@ function App() {
     const url = referenceVideoUrl.trim();
     if (!url) {
       setReferenceVideo(null);
-      return;
+      return null;
     }
 
+    const startedAt = Date.now();
     setIsLoadingReference(true);
     setError("");
-    window.setTimeout(async () => {
-      setReferenceVideo(await buildReferenceVideoPreview(url));
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reference/youtube`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      if (!response.ok) throw new Error("레퍼런스 영상을 분석하지 못했습니다.");
+      const nextReference = { ...(await response.json()), source: "youtube" };
+      setReferenceVideo(nextReference);
+      return nextReference;
+    } catch (err) {
+      const fallbackReference = await buildReferenceVideoPreview(url);
+      setReferenceVideo(fallbackReference);
+      setError(err.message || "레퍼런스 분석 중 오류가 발생했습니다.");
+      return fallbackReference;
+    } finally {
+      const remaining = MIN_REFERENCE_ANALYSIS_MS - (Date.now() - startedAt);
+      if (remaining > 0) await wait(remaining);
       setIsLoadingReference(false);
-    }, 250);
+    }
+  };
+
+  const analyzeReferenceFile = async (file) => {
+    if (!file) return null;
+    const startedAt = Date.now();
+    setIsLoadingReference(true);
+    setError("");
+    try {
+      const nextReference = buildUploadedReferenceVideo(file);
+      setReferenceVideo(nextReference);
+      setReferenceVideoUrl("");
+      return nextReference;
+    } finally {
+      const remaining = MIN_REFERENCE_ANALYSIS_MS - (Date.now() - startedAt);
+      if (remaining > 0) await wait(remaining);
+      setIsLoadingReference(false);
+    }
   };
 
   const appendAudienceChat = (message, now, nextSituation) => {
@@ -894,10 +980,11 @@ function App() {
     }
   };
 
-  const startPresentation = async () => {
+  const startPresentation = async (scriptOverride = "") => {
     setError("");
     setReport(null);
-    const practiceScript = script.trim().length >= 10 ? script : DEFAULT_PRACTICE_SCRIPT;
+    const nextScript = typeof scriptOverride === "string" && scriptOverride.trim() ? scriptOverride : script;
+    const practiceScript = nextScript.trim().length >= 10 ? nextScript : DEFAULT_PRACTICE_SCRIPT;
     if (practiceScript !== script) {
       setScript(practiceScript);
     }
@@ -1114,6 +1201,39 @@ function App() {
     isPresentingRef.current = false;
   };
 
+  const saveReferenceAnalysis = (referenceType) => {
+    const recordTitle = materialFiles[0]?.name?.replace(/\.[^.]+$/, "") || "AI 발표 서비스 1차 발표";
+    const record = buildAnalysisRecord(referenceType, recordTitle);
+    const nextHistory = addPracticeHistoryRecord(practiceHistory, record);
+    setPracticeHistory(nextHistory);
+    setSectionPracticeContext((current) => ({ ...current, recordId: record.id }));
+    return record;
+  };
+
+  const goToSectionPractice = (sectionId = "intro", recordId = "") => {
+    cleanupRecording();
+    const nextRecordId = recordId || sectionPracticeContext.recordId || practiceHistory[0]?.id || "";
+    setSectionPracticeContext({ sectionId, recordId: nextRecordId });
+    setPage("sectionPractice");
+    window.history.pushState({}, "", "/section-practice");
+    setIsPresenting(false);
+    isPresentingRef.current = false;
+  };
+
+  const completeSectionPracticeFlow = (sectionId) => {
+    const nextHistory = completeSectionPractice(practiceHistory, sectionPracticeContext.recordId, sectionId);
+    setPracticeHistory(nextHistory);
+  };
+
+  const compareRecordWithDifferentReference = (record) => {
+    cleanupRecording();
+    setSectionPracticeContext({ sectionId: "intro", recordId: record?.id || "" });
+    setPage("preFeedback");
+    window.history.pushState({}, "", "/pre-feedback");
+    setIsPresenting(false);
+    isPresentingRef.current = false;
+  };
+
   const goToPracticePath = () => {
     cleanupRecording();
     setPage("setup");
@@ -1159,18 +1279,12 @@ function App() {
             isImporting={isImporting}
             isStarting={isStarting}
             importMixedFiles={importMixedFiles}
-            applyReferenceVideo={applyReferenceVideo}
             materialFiles={materialFiles}
             materialFeedback={materialFeedback}
-            isLoadingReference={isLoadingReference}
             isPreparing={isPreparing}
-            referenceVideo={referenceVideo}
-            referenceVideoUrl={referenceVideoUrl}
             scriptFeedback={scriptFeedback}
             script={script}
-            selectReferenceStyleForPractice={selectReferenceStyleForPractice}
             sessionPrepared={Boolean(preparedSignature && preparedSignature === buildPreparationSignature(script, materialFiles, referenceVideoUrl))}
-            setReferenceVideoUrl={setReferenceVideoUrl}
             setScript={setScript}
             preparePresentation={preparePresentation}
             startPresentation={startPresentation}
@@ -1182,12 +1296,27 @@ function App() {
         {page === "preFeedback" && (
           <PreFeedbackPage
             data={preFeedbackMock}
-            onRewriteScript={() => handleDeferredFeedbackAction("rewrite-script")}
-            onShortenScript={() => handleDeferredFeedbackAction("shorten-to-three-minutes")}
-            onSuggestSlideCopy={() => handleDeferredFeedbackAction("suggest-slide-copy")}
+            isLoadingReference={isLoadingReference}
+            onAnalyzeReferenceFile={analyzeReferenceFile}
+            onAnalyzeReferenceUrl={applyReferenceVideo}
+            onSaveAnalysis={saveReferenceAnalysis}
             onStartPractice={startPresentation}
-            selectedReferenceStyle={selectedReferenceStyle}
+            onUpdateScript={setScript}
+            referenceVideo={referenceVideo}
+            referenceVideoUrl={referenceVideoUrl}
+            setReferenceVideoUrl={setReferenceVideoUrl}
             sourceScript={script}
+            topNavigation={topNavigation}
+          />
+        )}
+
+        {page === "sectionPractice" && (
+          <SectionPracticePage
+            activeSection={sectionPracticeContext.sectionId}
+            onBack={goToPreFeedback}
+            onComplete={completeSectionPracticeFlow}
+            onGoRecords={goToRecords}
+            record={practiceHistory.find((record) => record.id === sectionPracticeContext.recordId) || practiceHistory[0]}
             topNavigation={topNavigation}
           />
         )}
@@ -1231,6 +1360,7 @@ function App() {
             aiStatus={aiStatus}
             error={error}
             isFinishing={isFinishing}
+            onGoRecords={goToRecords}
             report={report}
             reset={reset}
             materialFeedback={materialFeedback}
@@ -1239,7 +1369,14 @@ function App() {
           />
         )}
 
-        {page === "records" && <RecordsDashboard onNewPractice={goToPracticePath} />}
+        {page === "records" && (
+          <RecordsDashboard
+            history={practiceHistory}
+            onCompareWithDifferentReference={compareRecordWithDifferentReference}
+            onNewPractice={goToPracticePath}
+            onPracticeWithRecord={(record) => goToSectionPractice("intro", record.id)}
+          />
+        )}
       </section>
     </main>
   );
@@ -1355,17 +1492,11 @@ function SetupPage({
   isImporting,
   isPreparing,
   isStarting,
-  applyReferenceVideo,
   materialFiles,
   materialFeedback,
-  isLoadingReference,
-  referenceVideo,
-  referenceVideoUrl,
   scriptFeedback,
   script,
-  selectReferenceStyleForPractice,
   sessionPrepared,
-  setReferenceVideoUrl,
   setScript,
   preparePresentation,
   startPresentation,
@@ -1374,12 +1505,9 @@ function SetupPage({
 }) {
   const [dragging, setDragging] = useState(false);
   const [shouldScrollToFeedback, setShouldScrollToFeedback] = useState(false);
-  const [showReferencePanel, setShowReferencePanel] = useState(false);
-  const [showScriptFeedbackGuide, setShowScriptFeedbackGuide] = useState(false);
   const fileInputRef = useRef(null);
   const scriptFeedbackButtonRef = useRef(null);
   const preflightRef = useRef(null);
-  const referencePanelRef = useRef(null);
   const scriptWords = tokenCount(script);
   const estimatedMinutes = Math.max(1, Math.round(scriptWords / 135));
 
@@ -1390,25 +1518,8 @@ function SetupPage({
   };
 
   const handleScriptFeedback = async () => {
-    setShowScriptFeedbackGuide(false);
     setShouldScrollToFeedback(true);
     await preparePresentation();
-  };
-
-  const handlePracticeWithReferenceStyle = () => {
-    const nextReferenceStyle = selectReferenceStyleForPractice();
-    if (!nextReferenceStyle) return;
-    setShowScriptFeedbackGuide(true);
-    requestAnimationFrame(() => {
-      scriptFeedbackButtonRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
-  };
-
-  const openReferencePanel = () => {
-    setShowReferencePanel(true);
-    requestAnimationFrame(() => {
-      referencePanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
   };
 
   useEffect(() => {
@@ -1436,10 +1547,6 @@ function SetupPage({
             >
               {isStarting ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
               {isStarting ? "발표 시작 중" : "발표 시작"}
-            </button>
-            <button className="secondary-button reference-toggle-button" type="button" onClick={openReferencePanel}>
-              <SquarePlay size={18} />
-              레퍼런스 분석
             </button>
             <span className="hero-note">
               사전 분석은 선택입니다. 바로 시작할 수도 있고, 먼저 피드백을 본 뒤 발표를 시작할 수도 있습니다.
@@ -1472,7 +1579,7 @@ function SetupPage({
             <div className="script-drop-actions">
               <button
                 ref={scriptFeedbackButtonRef}
-                className={`script-feedback-button ${showScriptFeedbackGuide ? "attention" : ""}`}
+                className="script-feedback-button"
                 type="button"
                 disabled={isPreparing || isStarting}
                 onClick={handleScriptFeedback}
@@ -1502,11 +1609,6 @@ function SetupPage({
                   <span key={file.name}>{file.name}</span>
                 ))}
               </div>
-            ) : null}
-            {showScriptFeedbackGuide ? (
-              <p className="script-feedback-guide">
-                레퍼런스 스타일이 기준으로 저장되었습니다. 대본을 입력하고 대본 피드백을 눌러 먼저 수정한 뒤 발표 연습으로 넘어가세요.
-              </p>
             ) : null}
           </div>
         </div>
@@ -1544,62 +1646,14 @@ function SetupPage({
           ) : null}
         </section>
       ) : null}
-
-      {showReferencePanel ? (
-        <div className="reference-link-panel" ref={referencePanelRef}>
-          <div className="reference-link-copy">
-            <span>reference model</span>
-            <strong>닮고 싶은 발표를 넣어주세요</strong>
-            <p>원하는 발표 레퍼런스를 분석해 내 대본과 비교합니다.</p>
-          </div>
-          <div className="youtube-link-shell youtube-link-shell-light">
-            <SquarePlay size={16} />
-            <label>
-              <span>youtube reference</span>
-              <input
-                type="url"
-                value={referenceVideoUrl}
-                onChange={(event) => setReferenceVideoUrl(event.target.value)}
-                placeholder="https://youtube.com/watch?v=..."
-                aria-label="유튜브 링크"
-              />
-            </label>
-            <button className="reference-link-button" onClick={applyReferenceVideo} disabled={isLoadingReference} title="영상 분석">
-              {isLoadingReference ? <Loader2 className="spin" size={17} /> : <Search size={17} />}
-            </button>
-          </div>
-          <div className="reference-inline-result">
-            {referenceVideo ? (
-              <>
-                <div className="reference-card">
-                  {referenceVideo.thumbnail_url ? <img src={referenceVideo.thumbnail_url} alt="" /> : <SquarePlay size={38} />}
-                  <div>
-                    <strong>{referenceVideo.title || `YouTube 영상 ${referenceVideo.video_id}`}</strong>
-                    <span>{referenceVideo.author_name}</span>
-                    <span>{referenceVideo.status_label || formatReferenceStatus(referenceVideo)}</span>
-                  </div>
-                </div>
-                <ReferenceQuickAnalysis
-                  referenceVideo={referenceVideo}
-                  onPracticeWithStyle={handlePracticeWithReferenceStyle}
-                />
-              </>
-            ) : (
-              <p>URL을 넣고 분석하면 말하기 속도, 화법, 쉬는 타이밍, 강조 방식을 간단히 보여줍니다.</p>
-            )}
-          </div>
-        </div>
-      ) : null}
     </>
   );
 }
 
 const scoreHistory = [
-  { date: "06/18", total: 62, speechRate: 58, structure: 64, fillerWords: 52, persuasion: 61, closing: 66 },
-  { date: "06/20", total: 68, speechRate: 62, structure: 70, fillerWords: 60, persuasion: 66, closing: 72 },
-  { date: "06/22", total: 74, speechRate: 70, structure: 76, fillerWords: 66, persuasion: 72, closing: 78 },
-  { date: "06/24", total: 81, speechRate: 78, structure: 84, fillerWords: 73, persuasion: 79, closing: 86 },
-  { date: "06/25", total: 86, speechRate: 82, structure: 88, fillerWords: 80, persuasion: 85, closing: 89 },
+  { date: "1회차", time: "02:10", total: 68, speechRate: 66, structure: 69, fillerWords: 62, persuasion: 67, closing: 66 },
+  { date: "2회차", time: "03:20", total: 85, speechRate: 84, structure: 86, fillerWords: 80, persuasion: 84, closing: 83 },
+  { date: "3회차", time: "04:35", total: 83, speechRate: 82, structure: 84, fillerWords: 78, persuasion: 82, closing: 80 },
 ];
 
 const scoreOptions = [
@@ -1765,13 +1819,73 @@ const recordMenuItems = [
   { label: "설정", icon: Settings },
 ];
 
-function RecordsDashboard({ onNewPractice }) {
+const scoreLabels = {
+  speed: "말하기 속도",
+  pause: "쉬는 타이밍",
+  structure: "발표 구조",
+  emphasis: "강조 전달력",
+  closing: "마무리 임팩트",
+};
+
+const recordDawnLabels = ["오늘 04:35", "오늘 03:20", "오늘 02:10"];
+const recordScoreOverrides = [
+  {
+    totalScore: 83,
+    previousScore: 85,
+    scores: { speed: 82, pause: 80, structure: 84, emphasis: 82, closing: 80 },
+    previousScores: { speed: 84, pause: 83, structure: 86, emphasis: 84, closing: 83 },
+  },
+  {
+    totalScore: 85,
+    previousScore: 68,
+    scores: { speed: 84, pause: 83, structure: 86, emphasis: 84, closing: 83 },
+    previousScores: { speed: 66, pause: 60, structure: 69, emphasis: 67, closing: 66 },
+  },
+  {
+    totalScore: 68,
+    previousScore: 62,
+    scores: { speed: 66, pause: 60, structure: 69, emphasis: 67, closing: 66 },
+    previousScores: { speed: 60, pause: 54, structure: 62, emphasis: 59, closing: 61 },
+  },
+];
+
+function RecordsDashboard({ history, onCompareWithDifferentReference, onNewPractice, onPracticeWithRecord }) {
   const [selectedMetric, setSelectedMetric] = useState("total");
-  const [period, setPeriod] = useState("최근 30일");
+  const [period, setPeriod] = useState("오늘 새벽");
+  const [selectedReportId, setSelectedReportId] = useState("");
+  const visibleHistory = (history.length ? history : []).slice(0, 3).map((record, index) => ({
+    ...record,
+    ...recordScoreOverrides[index],
+    date: recordDawnLabels[index] || record.date,
+  }));
   const currentOption = scoreOptions.find((option) => option.key === selectedMetric) || scoreOptions[0];
-  const latestScore = scoreHistory.at(-1)?.[selectedMetric] ?? 0;
-  const previousScore = scoreHistory.at(-2)?.[selectedMetric] ?? latestScore;
+  const latestRecord = visibleHistory[0] || null;
+  const latestScore = selectedMetric === "total"
+    ? latestRecord?.totalScore || scoreHistory.at(-1)?.total || 0
+    : scoreHistory.at(-1)?.[selectedMetric] ?? 0;
+  const previousScore = selectedMetric === "total"
+    ? latestRecord?.previousScore || latestScore
+    : scoreHistory.at(-2)?.[selectedMetric] ?? latestScore;
+  const selectedReport = visibleHistory.find((record) => record.id === selectedReportId) || null;
   const maxFillerCount = Math.max(...fillerWords.map((item) => item.count));
+  const averagePrevious = Math.round(visibleHistory.reduce((total, record) => total + (record.previousScore || record.totalScore), 0) / Math.max(1, visibleHistory.length));
+  const averageCurrent = Math.round(visibleHistory.reduce((total, record) => total + record.totalScore, 0) / Math.max(1, visibleHistory.length));
+  const mostImproved = latestRecord?.improvedSection || "쉬는 타이밍";
+  const referenceGrowth = summarizeReferenceGrowth(visibleHistory);
+  const growthSummaryCards = [
+    { label: "총 연습 횟수", value: `${visibleHistory.length}회`, note: "오늘 새벽 발표 기록", change: "누적", icon: CalendarDays, tone: "sage" },
+    { label: "평균 점수 변화", value: `${averagePrevious}점 -> ${averageCurrent}점`, note: "이전 점수 대비", change: `+${Math.max(0, averageCurrent - averagePrevious)}점`, icon: CircleGauge, tone: "coral" },
+    { label: "가장 많이 개선된 항목", value: mostImproved, note: latestRecord?.referenceName || "레퍼런스 기준", change: "Focus", icon: CheckCircle2, tone: "plum" },
+  ];
+  const latestCapabilities = latestRecord?.scores
+    ? [
+        { label: "말하기 속도", value: latestRecord.scores.speed },
+        { label: "쉬는 타이밍", value: latestRecord.scores.pause },
+        { label: "발표 구조", value: latestRecord.scores.structure },
+        { label: "강조 전달력", value: latestRecord.scores.emphasis },
+        { label: "마무리 임팩트", value: latestRecord.scores.closing },
+      ]
+    : capabilityMetrics;
 
   return (
     <div className="records-shell">
@@ -1819,11 +1933,11 @@ function RecordsDashboard({ onNewPractice }) {
         <header className="records-header">
           <div>
             <p className="eyebrow">My practice log</p>
-            <h1>나의 기록</h1>
-            <p>발표 연습 데이터를 기반으로 나의 성장 흐름과 반복 약점을 확인할 수 있습니다.</p>
+            <h1>내 발표 성장 기록</h1>
+            <p>오늘 새벽에 진행한 세 번의 발표 연습 흐름을 한눈에 확인할 수 있습니다.</p>
           </div>
           <div className="period-filter" aria-label="기간 필터">
-            {["최근 7일", "최근 30일", "최근 3개월", "전체"].map((item) => (
+            {["오늘 새벽", "최근 7일", "전체"].map((item) => (
               <button className={period === item ? "active" : ""} key={item} type="button" onClick={() => setPeriod(item)}>
                 {item}
               </button>
@@ -1832,7 +1946,7 @@ function RecordsDashboard({ onNewPractice }) {
         </header>
 
         <section className="summary-grid" aria-label="발표 연습 요약">
-          {summaryCards.map((card) => {
+          {growthSummaryCards.map((card) => {
             const Icon = card.icon;
             return (
               <article className={`summary-card tone-${card.tone}`} key={card.label}>
@@ -1853,7 +1967,7 @@ function RecordsDashboard({ onNewPractice }) {
             <div className="records-card-heading">
               <div>
                 <h2>발표 점수 변화</h2>
-                <p>연습을 반복할수록 종합 점수가 어떻게 변화했는지 보여줍니다.</p>
+                <p>오늘 새벽 1회차부터 3회차까지 점수 변화입니다.</p>
               </div>
               <button className="card-select" type="button">
                 {period}
@@ -1880,7 +1994,7 @@ function RecordsDashboard({ onNewPractice }) {
             <div className="records-card-heading tight">
               <div>
                 <h2>현재 발표 역량</h2>
-                <p>최근 발표 기준</p>
+                <p>오늘 3회차 기준</p>
               </div>
               <MoreHorizontal size={18} />
             </div>
@@ -1891,7 +2005,7 @@ function RecordsDashboard({ onNewPractice }) {
               </div>
             </div>
             <div className="capability-list">
-              {capabilityMetrics.map((item) => (
+              {latestCapabilities.map((item) => (
                 <div className="capability-row" key={item.label}>
                   <span>{item.label}</span>
                   <div><i style={{ width: `${item.value}%` }} /></div>
@@ -1958,11 +2072,118 @@ function RecordsDashboard({ onNewPractice }) {
           </article>
         </section>
 
+        <section className="growth-record-section">
+          <div className="records-card-heading">
+            <div>
+              <h2>레퍼런스 기반 발표 기록</h2>
+              <p>각 발표가 어떤 기준 스타일로 분석되고 연습되었는지 확인합니다.</p>
+            </div>
+          </div>
+          <div className="growth-record-grid">
+            {visibleHistory.map((record) => (
+              <article className="growth-record-card" key={record.id}>
+                <div className="growth-record-top">
+                  <div>
+                    <span>{record.date}</span>
+                    <h3>{record.title}</h3>
+                  </div>
+                  <strong>{record.totalScore}점</strong>
+                </div>
+                <div className="record-reference-line">
+                  <span>기준 레퍼런스</span>
+                  <b>{record.referenceName}</b>
+                </div>
+                <div className="record-insight-grid">
+                  <div>
+                    <span>점수 변화</span>
+                    <strong>이전보다 +{Math.max(0, record.totalScore - record.previousScore)}점</strong>
+                  </div>
+                  <div>
+                    <span>가장 개선된 항목</span>
+                    <strong>{record.improvedSection}</strong>
+                  </div>
+                  <div>
+                    <span>아직 부족한 항목</span>
+                    <strong>{record.weakSection}</strong>
+                  </div>
+                  <div>
+                    <span>최근 연습 구간</span>
+                    <strong>{record.recentPracticeSection}</strong>
+                  </div>
+                </div>
+                <div className="growth-record-actions">
+                  <button type="button" onClick={() => setSelectedReportId(record.id)}>상세 리포트 보기</button>
+                  <button type="button" onClick={() => onPracticeWithRecord(record)}>같은 레퍼런스로 다시 연습</button>
+                  <button type="button" onClick={() => onCompareWithDifferentReference(record)}>다른 레퍼런스로 비교하기</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        {selectedReport ? (
+          <section className="dashboard-card record-detail-panel">
+            <div className="records-card-heading">
+              <div>
+                <h2>상세 리포트</h2>
+                <p>{selectedReport.title} · {selectedReport.referenceName} · {selectedReport.date}</p>
+              </div>
+              <button className="card-select" type="button" onClick={() => setSelectedReportId("")}>닫기</button>
+            </div>
+            <div className="record-detail-summary">
+              <strong>종합 점수 {selectedReport.previousScore}점{" -> "}{selectedReport.totalScore}점</strong>
+              <p>{selectedReport.nextRecommendation}</p>
+            </div>
+            <div className="record-score-change-grid">
+              {Object.entries(scoreLabels).map(([key, label]) => (
+                <div key={key}>
+                  <span>{label}</span>
+                  <strong>{selectedReport.previousScores?.[key] || 0}{" -> "}{selectedReport.scores?.[key] || 0}</strong>
+                </div>
+              ))}
+            </div>
+            <div className="record-section-feedback-grid">
+              <div>
+                <strong>도입부</strong>
+                <p>{selectedReport.sectionFeedback?.intro}</p>
+              </div>
+              <div>
+                <strong>본론</strong>
+                <p>{selectedReport.sectionFeedback?.body}</p>
+              </div>
+              <div>
+                <strong>마무리</strong>
+                <p>{selectedReport.sectionFeedback?.closing}</p>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        <section className="reference-growth-section">
+          <div className="records-card-heading">
+            <div>
+              <h2>레퍼런스별 성장 기록</h2>
+              <p>스타일별 연습 횟수와 최근 개선 흐름입니다.</p>
+            </div>
+          </div>
+          <div className="reference-growth-grid">
+            {referenceGrowth.map((item) => (
+              <article className="reference-growth-card" key={item.id}>
+                <h3>{item.name}</h3>
+                <p>총 {item.count}회 연습</p>
+                <strong>{item.scoreChange}</strong>
+                <span>가장 많이 개선된 항목: {item.improved}</span>
+                <em>최근 연습: {item.latestDate}</em>
+              </article>
+            ))}
+          </div>
+        </section>
+
         <section className="dashboard-card records-table-card">
           <div className="records-card-heading">
             <div>
               <h2>최근 발표 기록</h2>
-              <p>{period} 기준으로 정리한 발표 연습 로그입니다.</p>
+              <p>오늘 새벽 시간대의 3개 발표 기록만 정리했습니다.</p>
             </div>
             <span className="score-delta">
               <Clock3 size={15} />
@@ -1973,23 +2194,23 @@ function RecordsDashboard({ onNewPractice }) {
             <table className="records-table">
               <thead>
                 <tr>
-                  <th>날짜</th>
+                  <th>시간</th>
                   <th>발표 제목</th>
                   <th>총점</th>
-                  <th>등급</th>
-                  <th>가장 낮은 항목</th>
-                  <th>시간</th>
+                  <th>기준 레퍼런스</th>
+                  <th>개선 항목</th>
+                  <th>최근 구간</th>
                 </tr>
               </thead>
               <tbody>
-                {recentRecords.map((record) => (
-                  <tr key={`${record.date}-${record.title}`}>
+                {visibleHistory.map((record) => (
+                  <tr key={`${record.id}-${record.title}`}>
                     <td>{record.date}</td>
                     <td>{record.title}</td>
-                    <td><strong>{record.score}</strong>점</td>
-                    <td><span className="grade-pill">{record.grade}</span></td>
-                    <td>{record.weakest}</td>
-                    <td>{record.time}</td>
+                    <td><strong>{record.totalScore}</strong>점</td>
+                    <td><span className="grade-pill">{record.referenceName}</span></td>
+                    <td>{record.improvedSection}</td>
+                    <td>{record.recentPracticeSection}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2054,7 +2275,7 @@ function ScoreLineChart({ metric, option }) {
   );
 }
 
-function ReportPage({ aiStatus, error, isFinishing, report, reset, materialFeedback, scriptFeedback, spokenWords }) {
+function ReportPage({ aiStatus, error, isFinishing, onGoRecords, report, reset, materialFeedback, scriptFeedback, spokenWords }) {
   return (
     <>
       <header className="product-header compact">
@@ -2078,7 +2299,7 @@ function ReportPage({ aiStatus, error, isFinishing, report, reset, materialFeedb
           </div>
         </section>
       ) : null}
-      {report ? <Report aiStatus={aiStatus} report={report} materialFeedback={materialFeedback} scriptFeedback={scriptFeedback} spokenWords={spokenWords} /> : null}
+      {report ? <Report aiStatus={aiStatus} onGoRecords={onGoRecords} report={report} materialFeedback={materialFeedback} scriptFeedback={scriptFeedback} spokenWords={spokenWords} /> : null}
     </>
   );
 }
@@ -2170,7 +2391,7 @@ function visibleReportSummary(report) {
   return summary;
 }
 
-function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWords }) {
+function Report({ aiStatus, onGoRecords, report, materialFeedback, scriptFeedback, spokenWords }) {
   const aiLive = Boolean(report.used_openai || report.used_gemini);
   const aiSourceLabel = report.used_openai ? "GPT Coaching" : report.used_gemini ? "AI Coaching" : "Basic Coaching";
   const metricSourceLabel = report.used_openai ? "GPT + 수집 메트릭 기반" : report.used_gemini ? "AI + 수집 메트릭 기반" : "수집 메트릭 기반";
@@ -2395,6 +2616,12 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
 
       <div className="report-note">
         {aiLive ? (report.used_openai ? "GPT 분석이 반영된 리포트입니다." : "AI 분석이 반영된 리포트입니다.") : "AI 연결이 불안정해 기본 분석으로 리포트를 만들었습니다."}
+      </div>
+      <div className="report-bottom-actions">
+        <button className="secondary-button" type="button" onClick={onGoRecords}>
+          <LayoutDashboard size={17} />
+          내 기록으로 이동
+        </button>
       </div>
     </section>
   );

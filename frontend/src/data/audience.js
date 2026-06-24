@@ -2,6 +2,7 @@ export const audience = [
   {
     name: "민서",
     role: "공감형 청중",
+    videoKey: "female1",
     stateProfile: "supportive",
     skin: ["#ffd9c2", "#f2b392"],
     hair: ["#704b3d", "#3d2924"],
@@ -26,6 +27,7 @@ export const audience = [
   {
     name: "하린",
     role: "표현형 청중",
+    videoKey: "female2",
     stateProfile: "expressive",
     skin: ["#ffd7c5", "#f0ae90"],
     hair: ["#bc625c", "#783537"],
@@ -37,6 +39,7 @@ export const audience = [
   {
     name: "도윤",
     role: "차분형 청중",
+    videoKey: "male2",
     stateProfile: "calm",
     skin: ["#efc6a6", "#d39774"],
     hair: ["#7b5540", "#493128"],

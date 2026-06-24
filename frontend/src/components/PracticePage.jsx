@@ -8,6 +8,21 @@ import male1WakeVideo from "../data/남자1-졸-평.mp4";
 import male1FocusVideo from "../data/남자1-집중.mp4";
 import male1SleepVideo from "../data/남자1-평-졸.mp4";
 import male1IdleVideo from "../data/남자1-평시.mp4";
+import male2AdmireVideo from "../data/남자2-감탄.mp4";
+import male2QuestionVideo from "../data/남자2-의문.mp4";
+import male2SleepVideo from "../data/남자2-졸음.mp4";
+import male2IdleVideo from "../data/남자2-평시.mp4";
+import female1AdmireVideo from "../data/여자1-감탄.mp4";
+import female1QuestionVideo from "../data/여자1-의문.mp4";
+import female1WakeVideo from "../data/여자1-졸-평.mp4";
+import female1FocusVideo from "../data/여자1-집중.mp4";
+import female1SleepVideo from "../data/여자1-평-졸.mp4";
+import female1IdleVideo from "../data/여자1-평시.mp4";
+import female2AdmireVideo from "../data/여자2-감탄.mp4";
+import female2QuestionVideo from "../data/여자2-의문.mp4";
+import female2SleepVideo from "../data/여자2-졸음.mp4";
+import female2FocusVideo from "../data/여자2-집중.mp4";
+import female2IdleVideo from "../data/여자2-평시.mp4";
 
 const videoAudienceAssets = {
   male1: {
@@ -17,6 +32,30 @@ const videoAudienceAssets = {
     admire: male1AdmireVideo,
     focus: male1FocusVideo,
     question: male1QuestionVideo,
+  },
+  male2: {
+    idle: male2IdleVideo,
+    sleepIn: male2SleepVideo,
+    wake: male2IdleVideo,
+    admire: male2AdmireVideo,
+    focus: male2IdleVideo,
+    question: male2QuestionVideo,
+  },
+  female1: {
+    idle: female1IdleVideo,
+    sleepIn: female1SleepVideo,
+    wake: female1WakeVideo,
+    admire: female1AdmireVideo,
+    focus: female1FocusVideo,
+    question: female1QuestionVideo,
+  },
+  female2: {
+    idle: female2IdleVideo,
+    sleepIn: female2SleepVideo,
+    wake: female2IdleVideo,
+    admire: female2AdmireVideo,
+    focus: female2FocusVideo,
+    question: female2QuestionVideo,
   },
 };
 
@@ -198,7 +237,18 @@ function isFiniteAction(action) {
 }
 
 function VideoAudienceAvatar({ person, reaction, mood, volume }) {
-  const assets = videoAudienceAssets[person.videoKey];
+  const sourceAssets = videoAudienceAssets[person.videoKey];
+  const assets = useMemo(() => {
+    if (!sourceAssets?.idle) return null;
+    return {
+      idle: sourceAssets.idle,
+      sleepIn: sourceAssets.sleepIn || sourceAssets.idle,
+      wake: sourceAssets.wake || sourceAssets.idle,
+      admire: sourceAssets.admire || sourceAssets.idle,
+      focus: sourceAssets.focus || sourceAssets.idle,
+      question: sourceAssets.question || sourceAssets.idle,
+    };
+  }, [sourceAssets]);
   const idleVideoRef = useRef(null);
   const actionVideoRef = useRef(null);
   const previousMoodRef = useRef(mood);
@@ -211,6 +261,7 @@ function VideoAudienceAvatar({ person, reaction, mood, volume }) {
   const isSleepingMood = mood === "bored";
 
   useEffect(() => {
+    if (!assets) return;
     Object.values(assets).forEach((source) => {
       const video = document.createElement("video");
       video.preload = "auto";
@@ -229,6 +280,7 @@ function VideoAudienceAvatar({ person, reaction, mood, volume }) {
   }, []);
 
   useEffect(() => {
+    if (!assets) return;
     const now = Date.now();
     const previousMood = previousMoodRef.current;
     const previousReaction = previousReactionRef.current;
@@ -311,6 +363,10 @@ function VideoAudienceAvatar({ person, reaction, mood, volume }) {
     () => `audience-video audience-video-action ${actionReady ? "ready" : ""} ${action?.kind === "asleep" ? "asleep" : ""}`,
     [action, actionReady],
   );
+
+  if (!assets) {
+    return <AudienceAvatar person={person} mood={mood} index={0} />;
+  }
 
   return (
     <div className="audience-video-shell" style={{ "--audio-level": Math.min(volume * 30, 1.6) }}>
@@ -401,7 +457,7 @@ function AudienceTile({ person, reaction, active, volume, index }) {
   const mood = visualMood(reaction);
   return (
     <article className={`audience-tile mood-${mood} ${active ? "active" : ""}`} data-reaction={mood}>
-      {person.videoKey ? (
+      {person.videoKey && videoAudienceAssets[person.videoKey] ? (
         <VideoAudienceAvatar person={person} reaction={reaction} mood={mood} volume={volume} />
       ) : (
         <div className="avatarbox" style={{ "--bob": `${Math.min(volume * 30, 1.6)}px` }}>
@@ -452,6 +508,7 @@ export default function PracticePage({
   deliveryLabel,
 }) {
   const currentMessage = situationMessages[situation] || situationMessages.opening;
+  const currentStateLabel = reactionCopy[reaction] || currentMessage.state || "상태 확인";
 
   return (
     <>
@@ -477,7 +534,7 @@ export default function PracticePage({
           <div className="coach-card">
             <div className={`voice-dot ${voiceActive ? "active" : ""}`} />
             <div>
-              <strong>{currentMessage.coaching}</strong>
+              <strong>{currentStateLabel}</strong>
               <p>{recognitionStatus}</p>
             </div>
           </div>

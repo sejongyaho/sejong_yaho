@@ -376,7 +376,7 @@ function App() {
 
   const refreshAiStatus = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/ai/status?probe=true`);
+      const response = await fetch(`${API_BASE_URL}/api/openai/status?probe=true`);
       if (!response.ok) throw new Error("AI 상태를 확인하지 못했습니다.");
       setAiStatus(await response.json());
     } catch (err) {
@@ -429,8 +429,8 @@ function App() {
   const pushChatForAudienceChange = (person, nextSituation, now, snapshot = {}, nextReaction = "") => {
     const lastPersonChatAt = lastAudienceChatAtRef.current[person.name] || 0;
     if (audienceChatPendingRef.current) return;
-    if (now - lastGlobalAudienceChatAtRef.current < 3200) return;
-    if (now - lastPersonChatAt < 7500) return;
+    if (now - lastGlobalAudienceChatAtRef.current < 2200) return;
+    if (now - lastPersonChatAt < 5000) return;
 
     lastAudienceChatAtRef.current = {
       ...lastAudienceChatAtRef.current,
@@ -504,8 +504,8 @@ function App() {
     const noAudienceConcern = Object.values(nextAudienceReactions).every((item) => item === "attentive" || item === "excited");
     if (!isSteadyNormal || !hasEnoughSpeech || !paceLooksFine || !noAudienceConcern) return;
     if (audienceChatPendingRef.current) return;
-    if (now - lastEncouragementAtRef.current < 10000) return;
-    if (now - lastGlobalAudienceChatAtRef.current < 3500) return;
+    if (now - lastEncouragementAtRef.current < 6000) return;
+    if (now - lastGlobalAudienceChatAtRef.current < 2400) return;
 
     const candidates = audience.filter((person) => nextAudienceReactions[person.name] === "attentive");
     const person = candidates[Math.floor(Math.random() * candidates.length)] || audience[0];
@@ -1638,6 +1638,7 @@ function buildLocalPracticeReport({ script, transcript, metrics, referenceVideo,
   const referenceProfile = selectedReferenceStyle?.profile;
 
   return {
+    used_openai: false,
     used_gemini: false,
     overall_score: hasEnoughSpeech ? 72 : 58,
     summary: hasEnoughSpeech
@@ -2077,7 +2078,7 @@ function ReportPage({ aiStatus, error, isFinishing, report, reset, materialFeedb
           </div>
         </section>
       ) : null}
-      {report ? <Report aiStatus={aiStatus} report={report} scriptFeedback={scriptFeedback} spokenWords={spokenWords} /> : null}
+      {report ? <Report aiStatus={aiStatus} report={report} materialFeedback={materialFeedback} scriptFeedback={scriptFeedback} spokenWords={spokenWords} /> : null}
     </>
   );
 }
@@ -2169,8 +2170,10 @@ function visibleReportSummary(report) {
   return summary;
 }
 
-function Report({ aiStatus, report, scriptFeedback, spokenWords }) {
-  const aiLive = Boolean(report.used_gemini);
+function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWords }) {
+  const aiLive = Boolean(report.used_openai || report.used_gemini);
+  const aiSourceLabel = report.used_openai ? "GPT Coaching" : report.used_gemini ? "AI Coaching" : "Basic Coaching";
+  const metricSourceLabel = report.used_openai ? "GPT + 수집 메트릭 기반" : report.used_gemini ? "AI + 수집 메트릭 기반" : "수집 메트릭 기반";
   const analysisMeta = report.analysis_meta || {};
   const analysisBasis = report.analysis_basis || {};
   const scoreVisible = analysisMeta.score_visible !== false;
@@ -2189,7 +2192,7 @@ function Report({ aiStatus, report, scriptFeedback, spokenWords }) {
     <section className="report-panel service-report">
       <div className="report-summary-card">
         <div>
-          <p className="eyebrow">{aiLive ? "AI Coaching" : "Basic Coaching"} · {analysisMeta.summary_label || "정식 결과"}</p>
+          <p className="eyebrow">{aiSourceLabel} · {analysisMeta.summary_label || "정식 결과"}</p>
           <h2>{!scoreVisible ? "말한 내용이 더 쌓이면 더 정확하게 볼 수 있어요" : score >= 80 ? "전달력이 좋은 발표였어요" : score >= 60 ? "조금만 다듬으면 더 좋아져요" : "발표 흐름을 다시 잡아보세요"}</h2>
           <p>{quickSummary}</p>
           <p className="report-summary-detail">{reportSummary}</p>
@@ -2326,7 +2329,7 @@ function Report({ aiStatus, report, scriptFeedback, spokenWords }) {
           <KeywordGroup title="분석 단계" items={[analysisMeta.summary_label || "정식 분석"]} emptyText="분석 단계 정보가 없습니다." />
           <KeywordGroup
             title="분석 소스"
-            items={[aiLive ? "AI + 수집 메트릭 기반" : "수집 메트릭 기반"]}
+            items={[metricSourceLabel]}
             emptyText="분석 소스 정보가 없습니다."
           />
           <KeywordGroup
@@ -2391,7 +2394,7 @@ function Report({ aiStatus, report, scriptFeedback, spokenWords }) {
       ) : null}
 
       <div className="report-note">
-        {aiLive ? "AI 분석이 반영된 리포트입니다." : "AI 연결이 불안정해 기본 분석으로 리포트를 만들었습니다."}
+        {aiLive ? (report.used_openai ? "GPT 분석이 반영된 리포트입니다." : "AI 분석이 반영된 리포트입니다.") : "AI 연결이 불안정해 기본 분석으로 리포트를 만들었습니다."}
       </div>
     </section>
   );

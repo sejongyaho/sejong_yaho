@@ -47,6 +47,7 @@ from .config import (
     OPENAI_AUDIENCE_MAX_SESSION_CALLS,
     OPENAI_AUDIENCE_MIN_INTERVAL_SECONDS,
     OPENAI_AUDIENCE_MODEL,
+    OPENAI_REPORT_MODEL,
     TEXT_EXTENSIONS,
     SUPPORTED_SCRIPT_EXTENSIONS,
     get_gemini_model,
@@ -348,6 +349,21 @@ def extract_openai_text(data: dict[str, Any]) -> str:
     return ""
 
 
+def parse_json_object_text(text: str) -> dict[str, Any]:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(cleaned[start : end + 1])
+        raise
+
+
 def mark_openai_success(kind: str) -> None:
     now = datetime.now(timezone.utc).isoformat()
     openai_runtime_state["last_live"] = True
@@ -607,8 +623,14 @@ def merge_report_with_fallback(
         "coach_note": report_detail.get("coach_note") or fallback_detail.get("coach_note") or "",
     }
     merged["transcript_full"] = transcript.strip()
+    if merged.get("used_openai"):
+        analysis_source = "openai_plus_heuristic"
+    elif merged.get("used_gemini"):
+        analysis_source = "gemini_plus_heuristic"
+    else:
+        analysis_source = "heuristic"
     merged["analysis_basis"] = {
-        "analysis_source": "gemini_plus_heuristic" if merged.get("used_gemini") else "heuristic",
+        "analysis_source": analysis_source,
         "timeline_count": len(merged.get("timeline_log") or []),
         "issue_count": len(merged.get("issue_log") or []),
         "speech_samples": analysis_meta.get("speech_samples", 0),
@@ -2086,6 +2108,83 @@ async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[
         return polish_user_report_text(sanitize_report_for_user(fallback_report))
 
 
+async def ask_openai_for_report(session: SessionState, fallback_report: dict[str, Any]) -> dict[str, Any]:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        mark_openai_error("final_report", "OPENAI_API_KEY is not configured")
+        fallback_report["used_openai"] = False
+        fallback_report["summary"] = "GPT 연결이 없어 기본 분석으로 리포트를 정리했습니다. 바로 고칠 부분부터 확인해 주세요."
+        return polish_user_report_text(sanitize_report_for_user(fallback_report))
+
+    prompt = build_ai_prompt_payload(session, fallback_report)
+    prompt["instruction"] = (
+        "You are a Korean presentation coach. Return strict JSON only. "
+        "Do not copy the whole heuristic report. Rewrite only the user-facing coaching fields. "
+        "Use heuristic_report metrics as facts. Do not mention research sources, papers, rubrics, criteria_basis, or internal criteria. "
+        "Avoid duplicate feedback topics and write concrete, easy Korean feedback."
+    )
+    prompt["required_schema"] = {
+        "summary": "Korean paragraph, 2-3 sentences, concrete and user-friendly",
+        "strengths": ["2-4 Korean bullets about what went well"],
+        "improvements": ["3-5 Korean bullets about what to fix next"],
+        "detailed_feedback": {
+            "priority_feedback": ["3-5 Korean bullets with evidence-based fixes"],
+            "practice_plan": ["3-5 concrete practice actions"],
+            "coach_note": "one short Korean coach note",
+        },
+        "issue_log": "optional; include only if improving wording from heuristic_report.issue_log",
+        "timeline_log": "optional; include only if improving wording from heuristic_report.timeline_log",
+    }
+    payload = {
+        "model": OPENAI_REPORT_MODEL,
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a Korean presentation coach. Return one valid JSON object only. "
+                    "Do not use markdown. Keep all user-facing text in natural Korean."
+                ),
+            },
+            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+        ],
+        "temperature": 0.35,
+        "max_output_tokens": 1800,
+        "text": {"format": {"type": "json_object"}},
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=24) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            response.raise_for_status()
+        text = extract_openai_text(response.json())
+        if not text:
+            raise ValueError("empty OpenAI final report response")
+        transcript = fallback_report.get("transcript_full") or (session.samples[-1].transcript if session.samples else "")
+        report_json = parse_json_object_text(text)
+        report = merge_report_with_fallback(report_json, fallback_report, transcript)
+        report["used_openai"] = True
+        report["used_gemini"] = False
+        report["openai_model"] = OPENAI_REPORT_MODEL
+        if isinstance(report.get("analysis_basis"), dict):
+            report["analysis_basis"]["analysis_source"] = "openai_plus_heuristic"
+        report.setdefault("reference_speaker_comparison", fallback_report.get("reference_speaker_comparison"))
+        mark_openai_success("final_report")
+        return polish_user_report_text(sanitize_report_for_user(report))
+    except httpx.HTTPStatusError as exc:
+        mark_openai_error("final_report", exc.response.text[:500] or f"HTTP {exc.response.status_code}", exc.response.status_code)
+    except Exception as exc:
+        mark_openai_error("final_report", str(exc))
+
+    fallback_report["used_openai"] = False
+    fallback_report["used_gemini"] = False
+    fallback_report["summary"] = "GPT 리포트 생성이 잠시 실패해 기본 분석으로 정리했습니다. 지금 연습에서 바로 고칠 부분을 중심으로 확인해 주세요."
+    return polish_user_report_text(sanitize_report_for_user(fallback_report))
+
+
 @app.get("/api/ai/status")
 async def ai_status(probe: bool = False) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -2410,4 +2509,4 @@ async def finish_session(session_id: str, request: FinishSessionRequest) -> dict
         raise HTTPException(status_code=404, detail="Session not found")
     transcript = request.transcript or (session.samples[-1].transcript if session.samples else "")
     fallback = build_heuristic_report(session, transcript)
-    return await ask_gemini_for_report_v2(session, fallback)
+    return await ask_openai_for_report(session, fallback)

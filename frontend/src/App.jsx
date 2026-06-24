@@ -914,8 +914,38 @@ function SetupPage({
           <SquarePlay size={16} />
           <label>
             <span>youtube reference</span>
-            <input type="url" placeholder="https://youtube.com/watch?v=..." aria-label="유튜브 링크" />
+            <input
+              type="url"
+              value={referenceVideoUrl}
+              onChange={(event) => setReferenceVideoUrl(event.target.value)}
+              placeholder="https://youtube.com/watch?v=..."
+              aria-label="유튜브 링크"
+            />
           </label>
+          <button className="reference-link-button" onClick={applyReferenceVideo} disabled={isLoadingReference} title="영상 분석">
+            {isLoadingReference ? <Loader2 className="spin" size={17} /> : <Search size={17} />}
+          </button>
+        </div>
+        <div className="reference-inline-result">
+          {referenceVideo ? (
+            <>
+              <div className="reference-card">
+                <img src={referenceVideo.thumbnail_url} alt="" />
+                <div>
+                  <strong>{referenceVideo.title || `YouTube 영상 ${referenceVideo.video_id}`}</strong>
+                  <span>{referenceVideo.author_name}</span>
+                  <span>
+                    {referenceVideo.reference_profile
+                      ? `음성 분석됨 · 초당 ${referenceVideo.reference_profile.syllables_per_second}음절`
+                      : "음성 분석이 안 되면 기본 기준 적용"}
+                  </span>
+                </div>
+              </div>
+              <ReferenceQuickAnalysis referenceVideo={referenceVideo} />
+            </>
+          ) : (
+            <p>URL을 넣고 분석하면 말하기 속도, 화법, 쉬는 타이밍, 강조 방식을 간단히 보여줍니다.</p>
+          )}
         </div>
       </div>
 
@@ -961,39 +991,6 @@ function SetupPage({
             {analysisItems.map(({ icon: Icon, label }) => (
               <span key={label}><Icon size={15} />{label}</span>
             ))}
-          </div>
-
-          <div className="reference-panel">
-            <h2>영상 분석 기준</h2>
-            <div className="reference-input-row">
-              <input
-                value={referenceVideoUrl}
-                onChange={(event) => setReferenceVideoUrl(event.target.value)}
-                placeholder="YouTube 발표 영상 URL"
-              />
-              <button className="icon-button" onClick={applyReferenceVideo} disabled={isLoadingReference} title="영상 분석">
-                {isLoadingReference ? <Loader2 className="spin" size={18} /> : <Search size={18} />}
-              </button>
-            </div>
-            {referenceVideo ? (
-              <>
-                <div className="reference-card">
-                  <img src={referenceVideo.thumbnail_url} alt="" />
-                  <div>
-                    <strong>{referenceVideo.title || `YouTube 영상 ${referenceVideo.video_id}`}</strong>
-                    <span>{referenceVideo.author_name}</span>
-                    <span>
-                      {referenceVideo.reference_profile
-                        ? `음성 분석됨 · 초당 ${referenceVideo.reference_profile.syllables_per_second}음절`
-                        : "음성 분석이 안 되면 기본 기준 적용"}
-                    </span>
-                  </div>
-                </div>
-                <ReferenceQuickAnalysis referenceVideo={referenceVideo} />
-              </>
-            ) : (
-              <p>URL을 넣고 분석하면 말하기 속도, 화법, 쉬는 타이밍, 강조 방식을 간단히 보여줍니다.</p>
-            )}
           </div>
         </aside>
       </section>

@@ -357,7 +357,7 @@ h1 span {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   min-height: 40px;
@@ -493,6 +493,43 @@ h1 span {
 .reference-link-panel .youtube-link-shell {
   z-index: 1;
   grid-column: 3;
+}
+
+.reference-link-button {
+  display: inline-grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid rgba(20, 23, 15, 0.12);
+  border-radius: 8px;
+  background: #10130b;
+  color: #f7f6ee;
+}
+
+.reference-link-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.reference-inline-result {
+  z-index: 1;
+  display: grid;
+  grid-column: 2 / -1;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.reference-inline-result > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.reference-link-panel .reference-card,
+.reference-link-panel .reference-analysis-item {
+  background: rgba(255, 253, 245, 0.72);
 }
 
 .dashboard-topline {
@@ -1669,6 +1706,10 @@ textarea::placeholder {
   }
 
   .reference-link-panel .youtube-link-shell {
+    grid-column: 2;
+  }
+
+  .reference-inline-result {
     grid-column: 2;
   }
 

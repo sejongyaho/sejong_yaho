@@ -29,7 +29,7 @@ This project should keep future features consistent with the current rehearsal w
 
 - The hero first viewport pairs the title/action area with the script input workspace.
 - Script writing and file import live together in the same panel.
-- The YouTube reference link field sits on the white paper gap between the hero workspace and the lower analysis row.
+- The YouTube reference link, analyze action, and compact reference result sit together on the white paper gap between the hero workspace and the lower analysis row.
 - The dark rehearsal preview belongs below the hero beside the analysis checklist.
 - Keep dark preview height aligned with the adjacent checklist when they sit in the same row.
 - Do not nest cards inside decorative cards unless the container is an actual tool surface.

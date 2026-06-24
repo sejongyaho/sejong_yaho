@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import re
+import subprocess
 import tempfile
 import time
 import xml.etree.ElementTree as ET
@@ -34,6 +35,11 @@ try:
     from pptx import Presentation
 except ImportError:  # pragma: no cover - handled gracefully at runtime
     Presentation = None
+
+try:
+    import fitz
+except ImportError:  # pragma: no cover - handled gracefully at runtime
+    fitz = None
 
 
 class StartSessionRequest(BaseModel):
@@ -98,15 +104,39 @@ class GeminiCallLimiter:
             remaining = max(0, self.max_calls - len(self._calls))
             return True, 0.0, remaining
 
+    def remaining(self) -> int:
+        now = time.monotonic()
+        with self._lock:
+            while self._calls and now - self._calls[0] >= self.window_seconds:
+                self._calls.popleft()
+            return max(0, self.max_calls - len(self._calls))
+
+
+class GeminiRateLimitError(RuntimeError):
+    def __init__(self, retry_after: float, remaining: int) -> None:
+        super().__init__("Gemini rate limit reached")
+        self.retry_after = retry_after
+        self.remaining = remaining
+
 
 MAX_PRESENTATION_UPLOAD_BYTES = int(os.getenv("MAX_PRESENTATION_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 MAX_PRESENTATION_UPLOAD_FILES = int(os.getenv("MAX_PRESENTATION_UPLOAD_FILES", "4"))
+MAX_VISION_MATERIAL_IMAGES = int(os.getenv("MAX_VISION_MATERIAL_IMAGES", "6"))
+MAX_VISION_PAGES_PER_FILE = int(os.getenv("MAX_VISION_PAGES_PER_FILE", "3"))
 GEMINI_RATE_WINDOW_SECONDS = int(os.getenv("GEMINI_RATE_WINDOW_SECONDS", "3600"))
 GEMINI_MAX_CALLS_PER_WINDOW = int(os.getenv("GEMINI_MAX_CALLS_PER_WINDOW", "6"))
 GEMINI_STATUS_CACHE_SECONDS = int(os.getenv("GEMINI_STATUS_CACHE_SECONDS", "600"))
 
 gemini_limiter = GeminiCallLimiter(GEMINI_MAX_CALLS_PER_WINDOW, GEMINI_RATE_WINDOW_SECONDS)
 ai_status_cache: dict[str, Any] = {"checked_at": 0.0, "payload": None}
+gemini_runtime_state: dict[str, Any] = {
+    "last_live": None,
+    "last_ok_at": None,
+    "last_error_at": None,
+    "last_error_code": None,
+    "last_error_message": None,
+    "last_call_kind": None,
+}
 
 
 app = FastAPI(title="Presentation Practice API")
@@ -148,10 +178,71 @@ def load_env_file() -> None:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+            os.environ[key.strip()] = value.strip().strip('"').strip("'")
 
 
 load_env_file()
+
+
+def mark_gemini_success(kind: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    gemini_runtime_state["last_live"] = True
+    gemini_runtime_state["last_ok_at"] = now
+    gemini_runtime_state["last_call_kind"] = kind
+    gemini_runtime_state["last_error_code"] = None
+    gemini_runtime_state["last_error_message"] = None
+
+
+def mark_gemini_error(kind: str, message: str, status_code: int | None = None) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    gemini_runtime_state["last_live"] = False
+    gemini_runtime_state["last_error_at"] = now
+    gemini_runtime_state["last_error_code"] = status_code
+    gemini_runtime_state["last_error_message"] = message
+    gemini_runtime_state["last_call_kind"] = kind
+
+
+async def call_gemini_api(
+    *,
+    kind: str,
+    payload: dict[str, Any],
+    timeout_seconds: int,
+    count_against_limit: bool = True,
+    retry_on_unavailable: int = 0,
+) -> tuple[dict[str, Any], int]:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    remaining = gemini_limiter.remaining()
+    if count_against_limit:
+        allowed, retry_after, remaining = gemini_limiter.allow()
+        if not allowed:
+            mark_gemini_error(kind, f"rate_limited:{retry_after:.1f}", 429)
+            raise GeminiRateLimitError(retry_after, remaining)
+
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    attempt = 0
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                response = await client.post(url, params={"key": api_key}, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                mark_gemini_success(kind)
+                return data, remaining
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500]
+            if exc.response.status_code == 503 and attempt < retry_on_unavailable:
+                attempt += 1
+                await asyncio.sleep(1.2 * attempt)
+                continue
+            mark_gemini_error(kind, detail or f"HTTP {exc.response.status_code}", exc.response.status_code)
+            raise
+        except Exception as exc:
+            mark_gemini_error(kind, str(exc))
+            raise
 
 
 def extract_youtube_video_id(url: str) -> str | None:
@@ -300,10 +391,14 @@ Required JSON schema:
             ],
             "generationConfig": {"responseMimeType": "application/json"},
         }
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(endpoint, params={"key": api_key}, json=payload)
-            response.raise_for_status()
-            raw = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        data, _remaining = await call_gemini_api(
+            kind="reference_audio",
+            payload=payload,
+            timeout_seconds=60,
+            count_against_limit=True,
+            retry_on_unavailable=1,
+        )
+        raw = data["candidates"][0]["content"]["parts"][0]["text"]
 
         profile = json.loads(raw)
         profile["transcript_source"] = "youtube_audio"
@@ -984,6 +1079,223 @@ async def build_reference_video(url: str | None) -> dict[str, Any] | None:
     return reference
 
 
+def sample_indices(total: int, limit: int) -> list[int]:
+    if total <= 0 or limit <= 0:
+        return []
+    if total <= limit:
+        return list(range(total))
+    if limit == 1:
+        return [0]
+    step = (total - 1) / (limit - 1)
+    return sorted({min(total - 1, round(step * index)) for index in range(limit)})
+
+
+def render_pdf_images_for_vision(data: bytes, page_limit: int) -> tuple[list[dict[str, Any]], list[str]]:
+    if fitz is None:
+        return [], ["PDF 시각 렌더링 라이브러리가 없어 텍스트 기반 분석만 가능합니다."]
+
+    notes: list[str] = []
+    images: list[dict[str, Any]] = []
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+        for page_index in sample_indices(document.page_count, page_limit):
+            page = document.load_page(page_index)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(1.7, 1.7), alpha=False)
+            images.append(
+                {
+                    "page_index": page_index,
+                    "mime_type": "image/png",
+                    "data": base64.b64encode(pixmap.tobytes("png")).decode("ascii"),
+                }
+            )
+        return images, notes
+    except Exception as exc:
+        return [], [f"PDF 페이지를 이미지로 렌더링하지 못했습니다: {exc}"]
+
+
+def convert_pptx_to_pdf_bytes(data: bytes) -> tuple[bytes | None, list[str]]:
+    notes: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="pptx-render-") as tmp_dir_name:
+        tmp_dir = Path(tmp_dir_name)
+        source_path = tmp_dir / "material.pptx"
+        output_dir = tmp_dir / "out"
+        output_dir.mkdir(exist_ok=True)
+        source_path.write_bytes(data)
+        command = [
+            "soffice",
+            "--headless",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(output_dir),
+            str(source_path),
+        ]
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=45,
+            )
+        except FileNotFoundError:
+            return None, ["LibreOffice가 없어 PPTX 시각 분석을 수행할 수 없습니다."]
+        except subprocess.TimeoutExpired:
+            return None, ["PPTX를 PDF로 변환하는 데 시간이 너무 오래 걸렸습니다."]
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.decode("utf-8", errors="ignore").strip()
+            return None, [f"PPTX를 PDF로 변환하지 못했습니다: {stderr or exc}"]
+
+        pdf_path = output_dir / "material.pdf"
+        if not pdf_path.exists():
+            return None, ["PPTX를 PDF로 변환했지만 결과 파일을 찾지 못했습니다."]
+        return pdf_path.read_bytes(), notes
+
+
+def render_material_images_for_vision(name: str, content_type: str | None, data: bytes) -> tuple[list[dict[str, Any]], list[str]]:
+    kind = file_kind(name, content_type)
+    if kind == "pdf":
+        return render_pdf_images_for_vision(data, MAX_VISION_PAGES_PER_FILE)
+    if kind == "pptx":
+        pdf_bytes, notes = convert_pptx_to_pdf_bytes(data)
+        if not pdf_bytes:
+            return [], notes
+        rendered_images, render_notes = render_pdf_images_for_vision(pdf_bytes, MAX_VISION_PAGES_PER_FILE)
+        return rendered_images, notes + render_notes
+    return [], ["PDF 또는 PPTX만 시각 분석 대상으로 지원합니다."]
+
+
+async def analyze_materials_with_gemini_vision(
+    script: str,
+    local_materials: list[dict[str, Any]],
+    uploads: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key or not uploads:
+        return None
+
+    vision_parts: list[dict[str, Any]] = []
+    material_context: list[dict[str, Any]] = []
+    image_budget = MAX_VISION_MATERIAL_IMAGES
+
+    for upload, local_material in zip(uploads, local_materials):
+        rendered_images, render_notes = render_material_images_for_vision(
+            upload["filename"],
+            upload.get("content_type"),
+            upload["data"],
+        )
+        local_material.setdefault("notes", [])
+        local_material["notes"] = list(local_material["notes"]) + render_notes
+
+        selected_images = rendered_images[:image_budget]
+        image_budget -= len(selected_images)
+        material_context.append(
+            {
+                "filename": upload["filename"],
+                "kind": local_material.get("kind"),
+                "page_count": local_material.get("page_count", 0),
+                "slide_count": local_material.get("slide_count", 0),
+                "word_count": local_material.get("word_count", 0),
+                "extracted_character_count": local_material.get("extracted_character_count", 0),
+                "preview": local_material.get("preview", ""),
+                "rendered_image_count": len(selected_images),
+            }
+        )
+        for image in selected_images:
+            unit_label = "page" if local_material.get("kind") == "pdf" else "slide"
+            vision_parts.append(
+                {"text": f"{upload['filename']} {unit_label} {image['page_index'] + 1} visual"}
+            )
+            vision_parts.append(
+                {"inline_data": {"mime_type": image["mime_type"], "data": image["data"]}}
+            )
+        if image_budget <= 0:
+            break
+
+    if not vision_parts:
+        return None
+
+    prompt = {
+        "instruction": (
+            "You are a Korean presentation design reviewer. Analyze the uploaded presentation materials together "
+            "with the speech script. Return strict JSON only. Base visual judgments on the rendered slide/page images, "
+            "and use extracted text only as supporting evidence."
+        ),
+        "script": script,
+        "materials": material_context,
+        "required_schema": {
+            "summary": "Korean short paragraph",
+            "estimated_minutes": "number",
+            "clarity_score": "integer 0-100",
+            "consistency_score": "integer 0-100",
+            "topic_fit_score": "integer 0-100",
+            "overall_score": "integer 0-100",
+            "notes": ["Korean short sentence"],
+            "files": [
+                {
+                    "filename": "string",
+                    "estimated_minutes": "number",
+                    "clarity_score": "integer 0-100",
+                    "consistency_score": "integer 0-100",
+                    "topic_fit_score": "integer 0-100",
+                    "overall_score": "integer 0-100",
+                    "summary": "Korean short sentence",
+                    "notes": ["Korean short sentence"],
+                }
+            ],
+        },
+    }
+    payload = {
+        "contents": [
+            {
+                "parts": [{"text": json.dumps(prompt, ensure_ascii=False)}, *vision_parts],
+            }
+        ],
+        "generationConfig": {"responseMimeType": "application/json"},
+    }
+
+    try:
+        data, _remaining = await call_gemini_api(
+            kind="preflight_materials",
+            payload=payload,
+            timeout_seconds=45,
+            count_against_limit=True,
+            retry_on_unavailable=1,
+        )
+        return json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
+    except Exception:
+        return None
+
+
+def merge_vision_material_feedback(
+    local_materials: list[dict[str, Any]],
+    vision_feedback: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not vision_feedback:
+        return local_materials
+
+    by_name = {item.get("filename"): item for item in (vision_feedback.get("files") or [])}
+    merged_materials: list[dict[str, Any]] = []
+    for item in local_materials:
+        merged = dict(item)
+        vision_item = by_name.get(item.get("filename"))
+        if vision_item:
+            merged.update(
+                {
+                    "estimated_minutes": vision_item.get("estimated_minutes", item.get("estimated_minutes")),
+                    "clarity_score": vision_item.get("clarity_score", item.get("clarity_score")),
+                    "consistency_score": vision_item.get("consistency_score", item.get("consistency_score")),
+                    "topic_fit_score": vision_item.get("topic_fit_score", item.get("topic_fit_score")),
+                    "overall_score": vision_item.get("overall_score", item.get("overall_score")),
+                    "summary": vision_item.get("summary", item.get("summary")),
+                    "notes": list(item.get("notes", [])) + list(vision_item.get("notes", [])),
+                    "analysis_source": "gemini_vision",
+                }
+            )
+        merged_materials.append(merged)
+    return merged_materials
+
+
 def normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
@@ -1545,8 +1857,78 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
         return fallback_report
 
 
+async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[str, Any]) -> dict[str, Any]:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return fallback_report
+
+    prompt = {
+        "instruction": "You are a Korean presentation coach. Return strict JSON only and preserve the provided criteria_basis.",
+        "script": session.script,
+        "reference_video": session.reference_video,
+        "samples": [sample.model_dump() for sample in session.samples[-80:]],
+        "heuristic_report": fallback_report,
+        "required_schema": {
+            "overall_score": "number 0-100",
+            "summary": "Korean paragraph with concrete evaluation",
+            "strengths": ["Korean bullet"],
+            "improvements": ["Korean bullet"],
+            "pace": fallback_report["pace"],
+            "silence": fallback_report["silence"],
+            "rhythm": fallback_report["rhythm"],
+            "script": fallback_report["script"],
+            "delivery_match": fallback_report["delivery_match"],
+            "keyword_feedback": fallback_report["keyword_feedback"],
+            "issue_log": fallback_report["issue_log"],
+            "detailed_feedback": fallback_report["detailed_feedback"],
+            "criteria_basis": fallback_report["criteria_basis"],
+            "presentation_material": fallback_report.get("presentation_material", {}),
+            "reference_video": fallback_report.get("reference_video"),
+            "reference_comparison": fallback_report.get("reference_comparison"),
+            "audience_reactions": fallback_report["audience_reactions"],
+        },
+    }
+    payload = {
+        "contents": [{"parts": [{"text": json.dumps(prompt, ensure_ascii=False)}]}],
+        "generationConfig": {"responseMimeType": "application/json"},
+    }
+
+    try:
+        data, remaining = await call_gemini_api(
+            kind="final_report",
+            payload=payload,
+            timeout_seconds=20,
+            count_against_limit=True,
+            retry_on_unavailable=2,
+        )
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        report = json.loads(text)
+        report["used_gemini"] = True
+        report["gemini_limits"] = {
+            "rate_limited": False,
+            "remaining_calls": remaining,
+        }
+        return report
+    except GeminiRateLimitError as exc:
+        fallback_report["summary"] = (
+            "Gemini 호출 한도에 도달해 기본 분석으로 대체했습니다. "
+            f"잠시 후 다시 시도하면 AI 분석을 사용할 수 있습니다. (다음 시도 가능: 약 {exc.retry_after:.0f}초 후)"
+        )
+        fallback_report["used_gemini"] = False
+        fallback_report["gemini_limits"] = {
+            "rate_limited": True,
+            "retry_after_seconds": round(exc.retry_after, 1),
+            "remaining_calls": exc.remaining,
+        }
+        return fallback_report
+    except Exception:
+        fallback_report["summary"] = "AI 리포트를 생성하지 못해 기본 분석 리포트로 정리했습니다. 발표 흐름과 전달력 평가는 로컬 분석 결과를 사용했습니다."
+        fallback_report["used_gemini"] = False
+        return fallback_report
+
+
 @app.get("/api/ai/status")
-async def ai_status() -> dict[str, Any]:
+async def ai_status(probe: bool = False) -> dict[str, Any]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
     if not api_key:
@@ -1555,6 +1937,22 @@ async def ai_status() -> dict[str, Any]:
             "live": False,
             "model": model,
             "message": "GEMINI_API_KEY가 비어 있어 로컬 분석만 사용합니다.",
+        }
+
+    if not probe:
+        return {
+            "configured": True,
+            "live": gemini_runtime_state.get("last_live"),
+            "model": model,
+            "cached": False,
+            "checked_live": False,
+            "remaining_calls": gemini_limiter.remaining(),
+            "last_ok_at": gemini_runtime_state.get("last_ok_at"),
+            "last_error_at": gemini_runtime_state.get("last_error_at"),
+            "last_error_code": gemini_runtime_state.get("last_error_code"),
+            "last_error_message": gemini_runtime_state.get("last_error_message"),
+            "last_call_kind": gemini_runtime_state.get("last_call_kind"),
+            "message": "Gemini API 키가 설정되어 있습니다. 실제 외부 호출은 분석이 실행될 때만 진행됩니다.",
         }
 
     now = time.monotonic()
@@ -1670,10 +2068,22 @@ async def start_session(
     materials: list[UploadFile] | None = File(default=None),
 ) -> dict[str, Any]:
     session_id = str(uuid4())
+    uploaded_blobs: list[dict[str, Any]] = []
     uploaded_materials: list[dict[str, Any]] = []
     for file in (materials or [])[:MAX_PRESENTATION_UPLOAD_FILES]:
         data = await file.read()
-        uploaded_materials.append(analyze_material_file(script, file.filename, file.content_type, data))
+        uploaded_blobs.append(
+            {
+                "filename": file.filename or "material",
+                "content_type": file.content_type,
+                "data": data,
+            }
+        )
+        uploaded_materials.append(analyze_material_file(script, file.filename or "material", file.content_type, data))
+    uploaded_materials = merge_vision_material_feedback(
+        uploaded_materials,
+        await analyze_materials_with_gemini_vision(script, uploaded_materials, uploaded_blobs),
+    )
     reference_video = await build_reference_video(reference_video_url)
 
     session = SessionState(
@@ -1711,4 +2121,4 @@ async def finish_session(session_id: str, request: FinishSessionRequest) -> dict
         raise HTTPException(status_code=404, detail="Session not found")
     transcript = request.transcript or (session.samples[-1].transcript if session.samples else "")
     fallback = build_heuristic_report(session, transcript)
-    return await ask_gemini_for_report(session, fallback)
+    return await ask_gemini_for_report_v2(session, fallback)

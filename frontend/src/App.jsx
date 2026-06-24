@@ -1839,6 +1839,10 @@ function cleanVisibleText(value) {
     .trim();
 }
 
+function normalizeTranscriptText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
 function feedbackTopicKey(item) {
   const text = cleanVisibleText(item).toLowerCase();
   const found = Object.entries(FEEDBACK_TOPICS).find(([, keywords]) => keywords.some((keyword) => text.includes(keyword.toLowerCase())));
@@ -1879,6 +1883,16 @@ function dedupeIssues(issues = [], limit = Infinity) {
   return result;
 }
 
+function cleanIssues(issues = [], limit = Infinity) {
+  return issues.slice(0, limit).map((issue) => ({
+    ...issue,
+    title: cleanVisibleText(issue.title),
+    evidence: cleanVisibleText(issue.evidence),
+    spoken_excerpt: cleanVisibleText(issue.spoken_excerpt),
+    suggestion: cleanVisibleText(issue.suggestion),
+  }));
+}
+
 function visibleReportSummary(report) {
   const summary = cleanVisibleText(report.summary);
   if (!summary || HIDDEN_REPORT_MARKERS.some((marker) => summary.includes(marker))) {
@@ -1893,17 +1907,19 @@ function visibleReportSummary(report) {
 function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWords }) {
   const aiLive = Boolean(report.used_gemini);
   const analysisMeta = report.analysis_meta || {};
+  const analysisBasis = report.analysis_basis || {};
   const scoreVisible = analysisMeta.score_visible !== false;
   const score = report.overall_score ?? 0;
   const quickSummary = buildQuickSummary(report);
   const reportSummary = visibleReportSummary(report);
-  const issueLog = dedupeIssues(report.issue_log || [], 6);
-  const timelineLog = report.timeline_log || [];
+  const issueLog = dedupeIssues(report.issue_log || [], 12);
+  const timelineLog = cleanIssues(report.timeline_log || [], 20);
   const strengths = dedupeTextItems(report.strengths || [], 4);
   const priorityFeedback = dedupeTextItems(report.detailed_feedback?.priority_feedback || report.improvements || [], 5);
   const practicePlan = dedupeTextItems(report.detailed_feedback?.practice_plan || [], 5);
   const presentationMaterial = report.presentation_material || materialFeedback || null;
   const referenceSpeakerComparison = report.reference_speaker_comparison;
+  const fullTranscript = normalizeTranscriptText(report.transcript_full);
 
   return (
     <section className="report-panel service-report">
@@ -1931,6 +1947,7 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         <ScoreDetail label="최장 침묵" value={`${report.silence?.longest_seconds ?? 0}초`} hint="5초 이상이면 위험" />
         <ScoreDetail label="휴지 비율" value={`${report.silence?.pause_ratio_percent ?? 0}%`} hint="권장 약 15%" />
         <ScoreDetail label="말한 단어 수" value={`${analysisMeta.spoken_words ?? report.delivery_match?.spoken_words ?? 0}개`} hint="말한 내용 기준" />
+        <ScoreDetail label="인식 구간 수" value={`${analysisMeta.speech_samples ?? 0}개`} hint="말이 실제로 잡힌 구간" />
       </div>
 
       {presentationMaterial ? (
@@ -2074,6 +2091,33 @@ function Report({ aiStatus, report, materialFeedback, scriptFeedback, spokenWord
         ) : (
           <p className="issue-empty">눈에 띄는 경고 구간은 따로 잡히지 않았습니다.</p>
         )}
+      </section>
+
+      <section className="report-two-column">
+        <div className="keyword-card">
+          <h3>분석 근거</h3>
+          <p>이번 리포트가 실제로 참고한 인식 데이터입니다.</p>
+          <KeywordGroup title="분석 단계" items={[analysisMeta.summary_label || "정식 분석"]} emptyText="분석 단계 정보가 없습니다." />
+          <KeywordGroup
+            title="분석 소스"
+            items={[aiLive ? "AI + 수집 메트릭 기반" : "수집 메트릭 기반"]}
+            emptyText="분석 소스 정보가 없습니다."
+          />
+          <KeywordGroup
+            title="수집량"
+            items={[
+              `인식 단어 ${analysisBasis.spoken_words ?? analysisMeta.spoken_words ?? 0}개`,
+              `인식 구간 ${analysisBasis.speech_samples ?? analysisMeta.speech_samples ?? 0}개`,
+              `타임라인 ${analysisBasis.timeline_count ?? timelineLog.length ?? 0}개`,
+              `문제 구간 ${analysisBasis.issue_count ?? issueLog.length ?? 0}개`,
+            ]}
+            emptyText="수집 정보가 없습니다."
+          />
+        </div>
+        <div className="practice-plan-card">
+          <h3>STT 전문</h3>
+          <p>{fullTranscript || "아직 표시할 STT 전문이 없습니다."}</p>
+        </div>
       </section>
 
       <section className="report-two-column">

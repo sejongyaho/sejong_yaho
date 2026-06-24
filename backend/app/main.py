@@ -216,7 +216,8 @@ def sanitize_report_for_user(report: dict[str, Any]) -> dict[str, Any]:
     report["summary"] = user_facing_summary(report)
     report["strengths"] = unique_feedback_items(report.get("strengths") or [], 4) or ["리허설 데이터를 안정적으로 수집했습니다."]
     report["improvements"] = unique_feedback_items(report.get("improvements") or [], 6)
-    report["issue_log"] = unique_issue_log(report.get("issue_log") or [], 6)
+    report["issue_log"] = unique_issue_log(report.get("issue_log") or [], 12)
+    report["timeline_log"] = [clean_issue_item(item) for item in (report.get("timeline_log") or [])[:20]]
 
     detailed_feedback = dict(report.get("detailed_feedback") or {})
     detailed_feedback["priority_feedback"] = unique_feedback_items(
@@ -228,6 +229,69 @@ def sanitize_report_for_user(report: dict[str, Any]) -> dict[str, Any]:
         detailed_feedback["coach_note"] = clean_user_text(detailed_feedback.get("coach_note"))
     report["detailed_feedback"] = detailed_feedback
     return report
+
+
+def merge_report_with_fallback(
+    report: dict[str, Any],
+    fallback_report: dict[str, Any],
+    transcript: str,
+) -> dict[str, Any]:
+    merged = dict(fallback_report)
+    merged.update(report or {})
+
+    merged["pace"] = fallback_report.get("pace")
+    merged["silence"] = fallback_report.get("silence")
+    merged["rhythm"] = fallback_report.get("rhythm")
+    merged["delivery_match"] = fallback_report.get("delivery_match")
+    merged["analysis_meta"] = fallback_report.get("analysis_meta")
+    merged["speech_habits"] = fallback_report.get("speech_habits")
+    merged["keyword_feedback"] = fallback_report.get("keyword_feedback")
+    merged["presentation_material"] = fallback_report.get("presentation_material")
+    merged["audience_reactions"] = fallback_report.get("audience_reactions")
+    merged["criteria_basis"] = fallback_report.get("criteria_basis")
+    merged["issue_log"] = report.get("issue_log") or fallback_report.get("issue_log") or []
+    merged["timeline_log"] = report.get("timeline_log") or fallback_report.get("timeline_log") or []
+    merged["reference_video"] = report.get("reference_video") or fallback_report.get("reference_video")
+    merged["reference_comparison"] = report.get("reference_comparison") or fallback_report.get("reference_comparison")
+
+    analysis_meta = fallback_report.get("analysis_meta") or {}
+    cautious_mode = analysis_meta.get("level") != "full" or (fallback_report.get("overall_score") or 0) < 65
+    if cautious_mode:
+        merged["strengths"] = fallback_report.get("strengths") or []
+    else:
+        merged["strengths"] = unique_feedback_items(
+            (fallback_report.get("strengths") or []) + (report.get("strengths") or []),
+            4,
+        )
+
+    merged["improvements"] = unique_feedback_items(
+        (report.get("improvements") or []) + (fallback_report.get("improvements") or []),
+        6,
+    )
+
+    fallback_detail = fallback_report.get("detailed_feedback") or {}
+    report_detail = report.get("detailed_feedback") or {}
+    merged["detailed_feedback"] = {
+        "priority_feedback": unique_feedback_items(
+            (report_detail.get("priority_feedback") or []) + (fallback_detail.get("priority_feedback") or []),
+            5,
+        ),
+        "practice_plan": unique_feedback_items(
+            (report_detail.get("practice_plan") or []) + (fallback_detail.get("practice_plan") or []),
+            5,
+        ),
+        "coach_note": report_detail.get("coach_note") or fallback_detail.get("coach_note") or "",
+    }
+    merged["transcript_full"] = transcript.strip()
+    merged["analysis_basis"] = {
+        "analysis_source": "gemini_plus_heuristic" if merged.get("used_gemini") else "heuristic",
+        "timeline_count": len(merged.get("timeline_log") or []),
+        "issue_count": len(merged.get("issue_log") or []),
+        "speech_samples": analysis_meta.get("speech_samples", 0),
+        "spoken_words": analysis_meta.get("spoken_words", 0),
+        "duration_seconds": analysis_meta.get("duration_seconds", 0),
+    }
+    return merged
 
 
 def build_issue_log(session: SessionState, transcript: str) -> list[dict[str, Any]]:
@@ -461,10 +525,6 @@ def build_timeline_log(session: SessionState) -> list[dict[str, Any]]:
         logs.append(classify_timeline_window(script_tokens, window, previous_transcript))
         previous_transcript = window[-1].transcript.strip()
 
-    if len(logs) > 18:
-        indices = sample_indices(len(logs), 18)
-        logs = [logs[index] for index in indices]
-
     return logs
 
 
@@ -493,8 +553,14 @@ def build_detailed_feedback(report: dict[str, Any], issue_log: list[dict[str, An
     silence = report["silence"]
     rhythm = report["rhythm"]
     delivery = report["delivery_match"]
+    analysis_meta = report.get("analysis_meta") or {}
 
     priorities = []
+    if issue_log:
+        primary_issue = issue_log[0]
+        priorities.append(
+            f"{primary_issue['time']} 구간에서 {primary_issue['title']}이 확인됐습니다. {primary_issue['suggestion']}"
+        )
     if silence["pause_ratio_percent"] >= 25 or silence["longest_seconds"] >= 6:
         priorities.append("침묵 복구 문장을 먼저 준비하세요. 멈췄을 때 바로 이어갈 문장 하나가 전체 전달력을 크게 올립니다.")
     if pace["syllables_per_second"] > 6.8:
@@ -516,20 +582,32 @@ def build_detailed_feedback(report: dict[str, Any], issue_log: list[dict[str, An
     ]
 
     if issue_log:
-        practice_plan.insert(1, f"가장 먼저 고칠 구간은 {issue_log[0]['time']}의 '{issue_log[0]['title']}'입니다.")
+        practice_plan.insert(1, f"가장 먼저 볼 구간은 {issue_log[0]['time']}의 '{issue_log[0]['title']}'입니다.")
 
     return {
         "priority_feedback": unique_feedback_items(priorities, 5),
         "practice_plan": practice_plan,
-        "coach_note": "아래 로그는 발표 중 저장된 누적 음성 인식 결과와 속도/침묵 샘플을 바탕으로 만든 근거입니다.",
+        "coach_note": (
+            f"아래 내용은 총 {analysis_meta.get('spoken_words', 0)}개의 인식 단어와 "
+            f"{analysis_meta.get('speech_samples', 0)}개 인식 구간, 그리고 속도/침묵 기록을 바탕으로 만든 근거입니다."
+        ),
     }
 
 
-def count_phrase_occurrences(text: str, phrases: list[str]) -> dict[str, int]:
-    normalized = re.sub(r"\s+", " ", text).strip()
+def count_phrase_occurrences(tokens: list[str], phrases: list[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for phrase in phrases:
-        count = normalized.count(phrase)
+        phrase_tokens = tokenize(phrase)
+        if not phrase_tokens:
+            continue
+        if len(phrase_tokens) == 1:
+            count = sum(1 for token in tokens if token == phrase_tokens[0])
+        else:
+            count = 0
+            last_index = len(tokens) - len(phrase_tokens) + 1
+            for index in range(max(0, last_index)):
+                if tokens[index : index + len(phrase_tokens)] == phrase_tokens:
+                    count += 1
         if count:
             counts[phrase] = count
     return counts
@@ -539,15 +617,15 @@ def build_speech_habits(transcript: str) -> dict[str, Any]:
     normalized = re.sub(r"\s+", " ", transcript).strip()
     tokens = tokenize(normalized)
     filler_counts = count_phrase_occurrences(
-        normalized,
+        tokens,
         ["어", "음", "그", "약간", "조금", "좀", "사실", "일단", "그러니까", "뭔가"],
     )
     vague_counts = count_phrase_occurrences(
-        normalized,
+        tokens,
         ["이런", "그런", "이 부분", "저 부분", "뭔가", "약간", "같은 경우"],
     )
     repair_counts = count_phrase_occurrences(
-        normalized,
+        tokens,
         ["아 아니", "다시 말하면", "정정하자면", "그러니까 다시", "아 잠시만"],
     )
 
@@ -1515,6 +1593,15 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         "improvements": unique_feedback_items(improvements, 6),
         "issue_log": issue_log,
         "timeline_log": timeline_log,
+        "transcript_full": transcript.strip(),
+        "analysis_basis": {
+            "analysis_source": "heuristic",
+            "timeline_count": len(timeline_log),
+            "issue_count": len(issue_log),
+            "speech_samples": analysis_meta["speech_samples"],
+            "spoken_words": analysis_meta["spoken_words"],
+            "duration_seconds": analysis_meta["duration_seconds"],
+        },
         "summary": "이번 연습에서 바로 고칠 부분을 중심으로 리포트를 정리했습니다.",
         "used_gemini": False,
     }
@@ -1526,6 +1613,13 @@ def build_heuristic_report(session: SessionState, transcript: str) -> dict[str, 
         report["summary"] = "말한 내용이 아직 짧아서 점수형 총평보다는 간단한 참고용 분석만 제공했습니다. 30초 이상 이어서 말하면 더 정확해집니다."
     elif analysis_meta["level"] == "preliminary":
         report["summary"] = f"{report['summary']} 다만 이번 결과는 가볍게 흐름을 점검하는 예비 결과로 보면 좋습니다."
+    else:
+        report["summary"] = (
+            f"총 {analysis_meta['spoken_words']}개의 인식 단어와 {analysis_meta['speech_samples']}개의 인식 구간을 바탕으로 "
+            f"속도, 침묵, 리듬, 말 습관을 함께 살펴봤습니다."
+        )
+        if issue_log:
+            report["summary"] += f" 가장 먼저 눈에 띈 부분은 {issue_log[0]['title']}입니다."
     report["detailed_feedback"] = build_stt_detailed_feedback(report, issue_log)
 
     if session.reference_video:
@@ -1601,11 +1695,14 @@ async def ask_gemini_for_report(session: SessionState, fallback_report: dict[str
             response = await client.post(url, params={"key": api_key}, json=payload)
             response.raise_for_status()
             data = response.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            report = json.loads(text)
-            report["used_gemini"] = True
-            report.setdefault("reference_speaker_comparison", fallback_report.get("reference_speaker_comparison"))
-            return polish_user_report_text(sanitize_report_for_user(report))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        transcript = fallback_report.get("transcript_full") or (session.samples[-1].transcript if session.samples else "")
+        report = merge_report_with_fallback(json.loads(text), fallback_report, transcript)
+        report["used_gemini"] = True
+        if isinstance(report.get("analysis_basis"), dict):
+            report["analysis_basis"]["analysis_source"] = "gemini_plus_heuristic"
+        report.setdefault("reference_speaker_comparison", fallback_report.get("reference_speaker_comparison"))
+        return polish_user_report_text(sanitize_report_for_user(report))
     except Exception:
         fallback_report["summary"] = "기본 분석으로 리포트를 정리했습니다. 지금 연습에서 바로 고칠 부분을 중심으로 확인해 주세요."
         return polish_user_report_text(sanitize_report_for_user(fallback_report))
@@ -1639,8 +1736,11 @@ async def ask_gemini_for_report_v2(session: SessionState, fallback_report: dict[
         )
         if not text:
             return sanitize_report_for_user(fallback_report)
-        report = json.loads(text)
+        transcript = fallback_report.get("transcript_full") or (session.samples[-1].transcript if session.samples else "")
+        report = merge_report_with_fallback(json.loads(text), fallback_report, transcript)
         report["used_gemini"] = True
+        if isinstance(report.get("analysis_basis"), dict):
+            report["analysis_basis"]["analysis_source"] = "gemini_plus_heuristic"
         report["gemini_limits"] = {
             "rate_limited": False,
             "remaining_calls": remaining,

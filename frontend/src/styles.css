@@ -1851,6 +1851,15 @@ textarea::placeholder {
   margin-top: 8px;
 }
 
+.practice-plan-card p {
+  margin: 12px 0 0;
+  color: var(--ink-soft);
+  font-weight: 720;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .spin {
   animation: spin 900ms linear infinite;
 }
